@@ -1,0 +1,492 @@
+// tests/humantime_tests.nv — the API tests, written against the
+// signatures.
+//
+// They COMPILE today and they FAIL at run, with `not implemented:
+// <module>.<fn>` from the `todo()` that is each body.  That is the
+// expected state of an interface release: the compiler has checked
+// every signature, every type and every effect row, and nothing else
+// has been checked because there is nothing else yet.
+//
+// WHERE THE VECTORS COME FROM.  `humantime`'s own documented examples —
+// `"2h 37m"`, `"1.5s"`, `"3 days"`, `"250ms"`, `"1y 2months"`, and the
+// unit table with `m` for minutes and `M` for months — and RFC 3339
+// § 5.8's sample timestamps.  Every number below follows from the unit
+// lengths the grammar defines: a year is 31557600 seconds and a month
+// is 2630016, so no vector needs a reference implementation to check.
+
+use std.test
+use htdur
+use humantime
+use htstamp
+
+// ── The grammar, text into a length ─────────────────────────────────
+
+@test
+fn test_the_terms_are_added()
+    match humantime.parse_duration("2h 30m")
+        Ok((secs, nanos)) =>
+            test.assert_eq(secs, 9000)
+            test.assert_eq(nanos, 0)
+        Err(e)            => test.fail(e.message())
+
+@test
+fn test_a_decimal_point_in_the_number()
+    match humantime.parse_duration("1.5s")
+        Ok((secs, nanos)) =>
+            test.assert_eq(secs, 1)
+            test.assert_eq(nanos, 500000000)
+        Err(e)            => test.fail(e.message())
+
+@test
+fn test_the_space_between_a_number_and_its_unit_is_optional()
+    match humantime.parse_duration("3 days")
+        Ok((secs, _n)) => test.assert_eq(secs, 259200)
+        Err(e)         => test.fail(e.message())
+    match humantime.parse_duration("3days")
+        Ok((secs, _n)) => test.assert_eq(secs, 259200)
+        Err(e)         => test.fail(e.message())
+
+@test
+fn test_the_sub_second_units()
+    match humantime.parse_duration("250ms")
+        Ok((secs, nanos)) =>
+            test.assert_eq(secs, 0)
+            test.assert_eq(nanos, 250000000)
+        Err(e)            => test.fail(e.message())
+    match humantime.parse_duration("1us")
+        Ok((secs, nanos)) =>
+            test.assert_eq(secs, 0)
+            test.assert_eq(nanos, 1000)
+        Err(e)            => test.fail(e.message())
+    match humantime.parse_duration("1ns")
+        Ok((secs, nanos)) =>
+            test.assert_eq(secs, 0)
+            test.assert_eq(nanos, 1)
+        Err(e)            => test.fail(e.message())
+
+@test
+fn test_a_year_is_365_and_a_quarter_days_and_a_month_is_a_twelfth_of_one()
+    // The grammar's fixed lengths, not calendar arithmetic.
+    match humantime.parse_duration("1y 2months")
+        Ok((secs, _n)) => test.assert_eq(secs, 36817632)
+        Err(e)         => test.fail(e.message())
+    test.assert_eq(htdur.year_secs(), 31557600)
+    test.assert_eq(htdur.month_secs(), 2630016)
+
+@test
+fn test_lowercase_m_is_minutes_and_uppercase_m_is_months()
+    // The one place the grammar is case-sensitive, and the one place a
+    // reader gets it wrong.
+    match humantime.parse_duration("1m")
+        Ok((secs, _n)) => test.assert_eq(secs, 60)
+        Err(e)         => test.fail(e.message())
+    match humantime.parse_duration("1M")
+        Ok((secs, _n)) => test.assert_eq(secs, 2630016)
+        Err(e)         => test.fail(e.message())
+
+@test
+fn test_the_long_spellings_of_every_unit()
+    match humantime.parse_duration("1second 1minute 1hour 1day 1week")
+        Ok((secs, _n)) => test.assert_eq(secs, 694861)
+        Err(e)         => test.fail(e.message())
+    match humantime.parse_duration("2seconds 2minutes 2hours")
+        Ok((secs, _n)) => test.assert_eq(secs, 7322)
+        Err(e)         => test.fail(e.message())
+
+@test
+fn test_a_bare_number_is_refused_rather_than_read_as_seconds()
+    // A bare number in a configuration file is ambiguous between
+    // seconds and milliseconds, and the two are three orders of
+    // magnitude apart.
+    match humantime.parse_duration("30")
+        Ok(_)  => test.fail("a duration needs a unit")
+        Err(e) =>
+            match e
+                HtNumberWithoutUnit(at) => test.assert_eq(at, 0)
+                _                       => test.fail("expected HtNumberWithoutUnit: ${e.message()}")
+
+@test
+fn test_a_unit_with_no_number_is_refused()
+    match humantime.parse_duration("1h m")
+        Ok(_)  => test.fail("`m` has no number in front of it")
+        Err(e) =>
+            match e
+                HtUnitWithoutNumber(at) => test.assert_eq(at, 3)
+                _                       => test.fail("expected HtUnitWithoutNumber: ${e.message()}")
+
+@test
+fn test_an_unknown_unit_is_reported_with_its_spelling()
+    // So the report says `unknown unit 'mn'` rather than `unknown unit
+    // at 1`.
+    match humantime.parse_duration("1mn")
+        Ok(_)  => test.fail("`mn` is not a unit")
+        Err(e) =>
+            match e
+                HtUnknownUnit(at, unit) =>
+                    test.assert_eq(at, 1)
+                    test.assert_eq(unit, "mn")
+                _                       => test.fail("expected HtUnknownUnit: ${e.message()}")
+
+@test
+fn test_a_duration_has_no_sign()
+    // `-5s` is a bad character at offset 0, not minus five seconds: a
+    // duration is a length.
+    match humantime.parse_duration("-5s")
+        Ok(_)  => test.fail("a length has no sign")
+        Err(e) =>
+            match e
+                HtBadCharacter(at, ch) =>
+                    test.assert_eq(at, 0)
+                    test.assert_eq(ch, 45)
+                _                      => test.fail("expected HtBadCharacter: ${e.message()}")
+
+@test
+fn test_an_empty_input_is_refused()
+    match humantime.parse_duration("   ")
+        Ok(_)  => test.fail("nothing is not a duration")
+        Err(e) =>
+            match e
+                HtEmptyInput => test.assert_eq(1, 1)
+                _            => test.fail("expected HtEmptyInput: ${e.message()}")
+
+@test
+fn test_the_second_resolution_parse_refuses_anything_below_a_second()
+    // For a consumer that only has seconds: a TTL, an HTTP max-age.
+    match humantime.parse_duration_secs("2h 30m")
+        Ok(secs) => test.assert_eq(secs, 9000)
+        Err(e)   => test.fail(e.message())
+    match humantime.parse_duration_secs("250ms")
+        Ok(_)  => test.fail("250ms has no whole-second spelling")
+        Err(e) =>
+            match e
+                HtBadCharacter(at, _ch) => test.assert_eq(at, 3)
+                _                       => test.fail("expected HtBadCharacter: ${e.message()}")
+
+@test
+fn test_is_duration_answers_without_building_the_error()
+    test.assert_eq(humantime.is_duration("2h 30m"), true)
+    test.assert_eq(humantime.is_duration("1.5s"), true)
+    test.assert_eq(humantime.is_duration("30"), false)
+    test.assert_eq(humantime.is_duration(""), false)
+
+@test
+fn test_the_offset_accessor_saves_a_match_at_every_call_site()
+    match humantime.parse_duration("1mn")
+        Ok(_)  => test.fail("`mn` is not a unit")
+        Err(e) => test.assert_eq(humantime.offset_of(e), 1)
+
+// ── The grammar, a length into text ─────────────────────────────────
+
+@test
+fn test_the_exact_spelling_is_largest_unit_first()
+    test.assert_eq(humantime.format_duration(htdur.from_secs(9000)), "2h 30m")
+    test.assert_eq(humantime.format_duration(htdur.from_millis(1500)), "1s 500ms")
+    test.assert_eq(humantime.format_duration(htdur.from_secs(259200)), "3days")
+    test.assert_eq(humantime.format_duration(htdur.from_nanos(1)), "1ns")
+
+@test
+fn test_zero_prints_as_a_length_and_not_as_an_empty_string()
+    test.assert_eq(humantime.format_duration(htdur.zero()), "0s")
+
+@test
+fn test_the_exact_spelling_round_trips()
+    // The property that makes `format_duration` exact rather than
+    // merely close, on the awkward lengths.
+    assert_round_trips(htdur.from_secs(9000))
+    assert_round_trips(htdur.from_millis(1500))
+    assert_round_trips(htdur.new(36817632, 123456789))
+    assert_round_trips(htdur.from_nanos(1))
+    assert_round_trips(htdur.zero())
+
+fn assert_round_trips(d: HtDuration)
+    let text = humantime.format_duration(d)
+    match humantime.parse_duration(text)
+        Ok((secs, nanos)) =>
+            test.assert_eq(secs, d.secs)
+            test.assert_eq(nanos, d.nanos)
+        Err(e)            => test.fail("${text}: ${e.message()}")
+
+@test
+fn test_the_floor_drops_the_terms_nobody_reads()
+    // A measured elapsed time spelled exactly is unreadable; a log line
+    // wants it to the second and a benchmark to the millisecond.
+    let measured = htdur.new(9004, 112918041)
+    test.assert_eq(humantime.format_duration(measured), "2h 30m 4s 112ms 918us 41ns")
+    test.assert_eq(humantime.format_duration_from(measured, htdur.from_secs(1)), "2h 30m 4s")
+    test.assert_eq(humantime.format_duration_from(measured, htdur.from_millis(1)), "2h 30m 4s 112ms")
+    // Truncated rather than rounded, so the answer never overstates.
+    test.assert_eq(humantime.format_duration_from(htdur.from_millis(999), htdur.from_secs(1)), "0s")
+
+@test
+fn test_the_rounded_spelling_is_one_term_with_a_word_in_front()
+    test.assert_eq(humantime.format_approx(htdur.from_secs(7200)), "2 hours")
+    test.assert_eq(humantime.format_approx(htdur.from_secs(7205)), "about 2 hours")
+    test.assert_eq(humantime.format_approx(htdur.from_millis(500)), "just now")
+    test.assert_eq(humantime.format_approx(htdur.from_secs(1)), "1 second")
+    test.assert_eq(humantime.format_approx(htdur.from_secs(2)), "2 seconds")
+
+@test
+fn test_the_rounded_spelling_is_not_in_the_grammar()
+    // It does not round-trip, and that is the point of having two
+    // formatters rather than one with a flag.
+    test.assert_eq(humantime.is_duration(humantime.format_approx(htdur.from_secs(7205))), false)
+
+@test
+fn test_the_unit_noun_agrees_with_the_length()
+    test.assert_eq(humantime.largest_unit_name(htdur.from_secs(7200)), "hours")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_hours(1)), "hour")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_months(1)), "month")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_nanos(5)), "nanoseconds")
+
+// ── The length itself ───────────────────────────────────────────────
+
+@test
+fn test_new_normalises_the_nanoseconds_into_the_seconds()
+    let d = htdur.new(1, 1500000000)
+    test.assert_eq(d.secs, 2)
+    test.assert_eq(d.nanos, 500000000)
+    // Negative anything is zero: the type has no negative values.
+    test.assert_eq(htdur.new(-1, 0).secs, 0)
+    test.assert_eq(htdur.new(0, -1).nanos, 0)
+
+@test
+fn test_the_constructors_are_the_unit_table()
+    test.assert_eq(htdur.from_nanos(1).nanos, 1)
+    test.assert_eq(htdur.from_micros(1).nanos, 1000)
+    test.assert_eq(htdur.from_millis(1).nanos, 1000000)
+    test.assert_eq(htdur.from_secs(1).secs, 1)
+    test.assert_eq(htdur.from_minutes(1).secs, 60)
+    test.assert_eq(htdur.from_hours(1).secs, 3600)
+    test.assert_eq(htdur.from_days(1).secs, 86400)
+    test.assert_eq(htdur.from_weeks(1).secs, 604800)
+    test.assert_eq(htdur.from_months(1).secs, 2630016)
+    test.assert_eq(htdur.from_years(1).secs, 31557600)
+    test.assert_eq(htdur.minute_secs(), 60)
+    test.assert_eq(htdur.hour_secs(), 3600)
+    test.assert_eq(htdur.day_secs(), 86400)
+    test.assert_eq(htdur.week_secs(), 604800)
+
+@test
+fn test_reading_a_length_back_truncates_rather_than_rounding()
+    // A timeout that rounded up would fire late.
+    let d = htdur.new(1, 999999999)
+    test.assert_eq(htdur.as_secs(d), 1)
+    test.assert_eq(htdur.subsec_nanos(d), 999999999)
+    test.assert_eq(htdur.as_millis(d), 1999)
+    test.assert_eq(htdur.as_micros(d), 1999999)
+    test.assert_eq(htdur.as_nanos(d), 1999999999)
+    test.assert_eq(htdur.is_zero(htdur.zero()), true)
+    test.assert_eq(htdur.is_zero(d), false)
+
+@test
+fn test_subtracting_past_zero_traps_and_sat_sub_stops_at_none()
+    test.assert_eq(htdur.sat_sub(htdur.from_secs(1), htdur.from_secs(5)).secs, 0)
+    test.assert_eq(htdur.sub(htdur.from_secs(5), htdur.from_secs(1)).secs, 4)
+    test.assert_raises(subtract_past_zero)
+
+fn subtract_past_zero() -> Int
+    htdur.sub(htdur.from_secs(1), htdur.from_secs(5)).secs
+
+@test
+fn test_the_rest_of_the_arithmetic()
+    let one = htdur.from_secs(1)
+    test.assert_eq(htdur.add(one, htdur.from_millis(500)).nanos, 500000000)
+    test.assert_eq(htdur.sat_add(htdur.max_value(), one).secs, htdur.max_value().secs)
+    // What an exponential backoff is.
+    test.assert_eq(htdur.mul_int(one, 8).secs, 8)
+    test.assert_eq(htdur.mul_int(one, -1).secs, 0)
+    test.assert_eq(htdur.div_int(htdur.from_secs(9), 2).secs, 4)
+    test.assert_eq(htdur.div_int(one, 0).secs, htdur.max_value().secs)
+    test.assert_eq(htdur.compare(one, htdur.from_secs(2)), -1)
+    test.assert_eq(htdur.compare(one, one), 0)
+    test.assert_eq(htdur.min(one, htdur.from_secs(2)).secs, 1)
+    test.assert_eq(htdur.max(one, htdur.from_secs(2)).secs, 2)
+
+// ── RFC 3339, both ways ─────────────────────────────────────────────
+
+@test
+fn test_the_strict_parser_reads_rfc_3339_utc()
+    match htstamp.parse_rfc3339("2026-09-11T14:30:00Z")
+        Ok(dt) =>
+            test.assert_eq(dt.date.year, 2026)
+            test.assert_eq(dt.date.month, 9)
+            test.assert_eq(dt.date.day, 11)
+            test.assert_eq(dt.time.hour, 14)
+            test.assert_eq(dt.time.minute, 30)
+            test.assert_eq(dt.time.second, 0)
+            test.assert_eq(dt.time.nano, 0)
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_the_fractional_part_is_read_to_the_nanosecond()
+    match htstamp.parse_rfc3339("2026-09-11T14:30:00.123456789Z")
+        Ok(dt) => test.assert_eq(dt.time.nano, 123456789)
+        Err(e) => test.fail(e.message())
+    match htstamp.parse_rfc3339("2026-09-11T14:30:00.5Z")
+        Ok(dt) => test.assert_eq(dt.time.nano, 500000000)
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_the_strict_parser_requires_the_t_and_the_z()
+    match htstamp.parse_rfc3339("2026-09-11 14:30:00Z")
+        Ok(_)  => test.fail("a space is not a `T` to the strict parser")
+        Err(e) =>
+            match e
+                HtBadTimestamp(at) => test.assert_eq(at, 10)
+                _                  => test.fail("expected HtBadTimestamp: ${e.message()}")
+    match htstamp.parse_rfc3339("2026-09-11T14:30:00")
+        Ok(_)  => test.fail("no `Z`")
+        Err(e) =>
+            match e
+                HtBadTimestamp(at) => test.assert_eq(at, 19)
+                _                  => test.fail("expected HtBadTimestamp: ${e.message()}")
+
+@test
+fn test_an_offset_other_than_z_is_not_this_package_s_job()
+    // A timestamp with an offset has civil fields that are not the
+    // instant's; calendar-nv's `iso8601.parse_rfc3339` answers the
+    // offset as a second value.
+    match htstamp.parse_rfc3339("2026-09-11T14:30:00+02:00")
+        Ok(_)  => test.fail("only `Z` is accepted here")
+        Err(e) =>
+            match e
+                HtBadTimestamp(at) => test.assert_eq(at, 19)
+                _                  => test.fail("expected HtBadTimestamp: ${e.message()}")
+
+@test
+fn test_a_leap_second_is_refused_rather_than_moved()
+    // `CivilTime` has no 60th second, and a timestamp this package
+    // silently moved would not round-trip.
+    match htstamp.parse_rfc3339("2016-12-31T23:59:60Z")
+        Ok(_)  => test.fail("there is no 60th second here")
+        Err(e) =>
+            match e
+                HtTimestampOutOfRange(at) => test.assert_eq(at, 17)
+                _                         => test.fail("expected HtTimestampOutOfRange: ${e.message()}")
+
+@test
+fn test_a_well_shaped_timestamp_naming_no_real_day_is_its_own_refusal()
+    match htstamp.parse_rfc3339("2026-02-30T00:00:00Z")
+        Ok(_)  => test.fail("February has no 30th")
+        Err(e) =>
+            match e
+                HtTimestampOutOfRange(at) => test.assert_eq(at, 8)
+                _                         => test.fail("expected HtTimestampOutOfRange: ${e.message()}")
+
+@test
+fn test_the_lenient_parser_takes_the_three_shapes_a_person_types()
+    match htstamp.parse_rfc3339_weak("2026-09-11 14:30:00")
+        Ok(dt) => test.assert_eq(dt.time.hour, 14)
+        Err(e) => test.fail(e.message())
+    match htstamp.parse_rfc3339_weak("2026-09-11T14:30:00")
+        Ok(dt) => test.assert_eq(dt.time.minute, 30)
+        Err(e) => test.fail(e.message())
+    // A date alone means midnight at the start of that day.
+    match htstamp.parse_rfc3339_weak("2026-09-11")
+        Ok(dt) =>
+            test.assert_eq(dt.time.hour, 0)
+            test.assert_eq(dt.date.day, 11)
+        Err(e) => test.fail(e.message())
+
+@test
+fn test_is_rfc3339_answers_for_the_strict_shape()
+    test.assert_eq(htstamp.is_rfc3339("2026-09-11T14:30:00Z"), true)
+    test.assert_eq(htstamp.is_rfc3339("2026-09-11 14:30:00"), false)
+
+@test
+fn test_the_five_precisions_are_five_functions()
+    // The precision is a decision made once: a log whose timestamps are
+    // sometimes six digits and sometimes nine does not sort as text.
+    let dt = htstamp.parse_rfc3339("2026-09-11T14:30:00.123456789Z")!
+    test.assert_eq(htstamp.format_rfc3339_seconds(dt), "2026-09-11T14:30:00Z")
+    test.assert_eq(htstamp.format_rfc3339_millis(dt), "2026-09-11T14:30:00.123Z")
+    test.assert_eq(htstamp.format_rfc3339_micros(dt), "2026-09-11T14:30:00.123456Z")
+    test.assert_eq(htstamp.format_rfc3339_nanos(dt), "2026-09-11T14:30:00.123456789Z")
+    test.assert_eq(htstamp.format_rfc3339(dt), "2026-09-11T14:30:00.123456789Z")
+
+@test
+fn test_the_shortest_formatter_drops_a_fractional_part_that_is_zero()
+    let whole = htstamp.parse_rfc3339("2026-09-11T14:30:00Z")!
+    test.assert_eq(htstamp.format_rfc3339(whole), "2026-09-11T14:30:00Z")
+    let milli = htstamp.parse_rfc3339("2026-09-11T14:30:00.250Z")!
+    test.assert_eq(htstamp.format_rfc3339(milli), "2026-09-11T14:30:00.250Z")
+    // And the fixed-width ones pad, so a column lines up.
+    test.assert_eq(htstamp.format_rfc3339_millis(whole), "2026-09-11T14:30:00.000Z")
+
+@test
+fn test_the_fixed_width_formatters_truncate_rather_than_round()
+    // A timestamp that rounded up would name an instant that had not
+    // happened yet.
+    let dt = htstamp.parse_rfc3339("2026-09-11T14:30:00.999999999Z")!
+    test.assert_eq(htstamp.format_rfc3339_seconds(dt), "2026-09-11T14:30:00Z")
+    test.assert_eq(htstamp.format_rfc3339_millis(dt), "2026-09-11T14:30:00.999Z")
+
+// ── The bridge between an instant and a length ──────────────────────
+
+@test
+fn test_since_takes_both_instants_because_there_is_no_clock_here()
+    let a = htstamp.parse_rfc3339("2026-09-11T14:00:00Z")!
+    let b = htstamp.parse_rfc3339("2026-09-11T16:30:00Z")!
+    match htstamp.since(a, b)
+        Ok((secs, nanos)) =>
+            test.assert_eq(secs, 9000)
+            test.assert_eq(nanos, 0)
+        Err(e)            => test.fail(e.message())
+
+@test
+fn test_since_refuses_a_later_that_is_earlier()
+    // The length has no sign; a caller who wants one wants
+    // `to_time_delta` and calendar-nv's signed arithmetic.
+    let a = htstamp.parse_rfc3339("2026-09-11T14:00:00Z")!
+    let b = htstamp.parse_rfc3339("2026-09-11T16:30:00Z")!
+    match htstamp.since(b, a)
+        Ok(_)  => test.fail("that is a negative length")
+        Err(e) =>
+            match e
+                HtTimestampOutOfRange(at) => test.assert_eq(at, -1)
+                _                         => test.fail("expected HtTimestampOutOfRange: ${e.message()}")
+
+@test
+fn test_add_and_sub_move_an_instant_by_an_exact_length()
+    let dt = htstamp.parse_rfc3339("2026-09-11T14:00:00Z")!
+    match htstamp.add(dt, htdur.from_hours(2))
+        Ok(later) => test.assert_eq(htstamp.format_rfc3339(later), "2026-09-11T16:00:00Z")
+        Err(e)    => test.fail(e.message())
+    match htstamp.sub(dt, htdur.from_hours(2))
+        Ok(before) => test.assert_eq(htstamp.format_rfc3339(before), "2026-09-11T12:00:00Z")
+        Err(e)     => test.fail(e.message())
+
+@test
+fn test_adding_a_month_here_is_thirty_days_and_ten_and_a_half_hours()
+    // NOT the same day of the next month.  `arith.add_months` in
+    // calendar-nv is the calendar one.
+    let dt = htstamp.parse_rfc3339("2026-01-31T00:00:00Z")!
+    match htstamp.add(dt, htdur.from_months(1))
+        Ok(later) => test.assert_eq(htstamp.format_rfc3339(later), "2026-03-02T10:33:36Z")
+        Err(e)    => test.fail(e.message())
+
+// ── The bridge to calendar-nv's own duration ────────────────────────
+
+@test
+fn test_every_length_is_a_non_negative_time_delta()
+    let td = htstamp.to_time_delta(htdur.new(9000, 500000000))
+    test.assert_eq(td.secs, 9000)
+    test.assert_eq(td.nanos, 500000000)
+
+@test
+fn test_a_negative_time_delta_has_no_length_to_become()
+    // A conversion that dropped the sign would turn "three hours ago"
+    // into "in three hours".
+    let ok = span.seconds(9000)
+    match htstamp.from_time_delta(ok)
+        Ok((secs, nanos)) =>
+            test.assert_eq(secs, 9000)
+            test.assert_eq(nanos, 0)
+        Err(e)            => test.fail(e.message())
+    let backwards = span.seconds(-1)
+    match htstamp.from_time_delta(backwards)
+        Ok(_)  => test.fail("a length has no sign")
+        Err(e) =>
+            match e
+                HtTimestampOutOfRange(at) => test.assert_eq(at, -1)
+                _                         => test.fail("expected HtTimestampOutOfRange: ${e.message()}")

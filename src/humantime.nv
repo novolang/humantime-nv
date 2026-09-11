@@ -1,0 +1,208 @@
+// humantime — the grammar, both ways: `"2h 30m"` into a length of time
+// and a length of time back into the shortest spelling that means it.
+//
+// Every body is a `todo()`.  The signatures are the design, and the
+// compiler checks them as claims; see the README for the stamp.
+//
+// THE GRAMMAR, in one paragraph.  A duration is one or more TERMS with
+// optional space between them; a term is a number and a unit; the
+// number may carry a decimal point; the terms are ADDED.  So `"2h 30m"`
+// is two and a half hours, `"1.5s"` is fifteen hundred milliseconds,
+// `"3 days"` is three days, `"250ms"` is a quarter of a second, and
+// `"1y 2months"` is a year and two twelfths of one.  The units are
+// `ns`, `us`/`µs`, `ms`, `s`/`sec`/`secs`/`second`/`seconds`,
+// `m`/`min`/`mins`/`minute`/`minutes`, `h`/`hr`/`hrs`/`hour`/`hours`,
+// `d`/`day`/`days`, `w`/`week`/`weeks`, `M`/`month`/`months`, and
+// `y`/`year`/`years`.
+//
+// `m` IS MINUTES AND `M` IS MONTHS, which is the one place the grammar
+// is case-sensitive and the one place a reader gets it wrong.  It is
+// humantime's rule and it is kept, because a package that quietly
+// differed from the grammar it is named after would be worse than one
+// that carries an awkward rule and says so.
+//
+// WHY THERE IS NO SIGN AND NO EXPONENT.  A duration is a length, and a
+// length has neither.  `"-5s"` is `HtBadCharacter` at offset 0, not
+// minus five seconds.
+//
+// WHY A PARSE ANSWERS A PAIR OF INTEGERS.  A `@value` struct may not be
+// the payload of a `Result` — it is unboxed, and the position has no
+// unboxed lowering — so the fallible direction answers the seconds and
+// the nanoseconds that `htdur.new` takes, and that call is the line
+// which follows.
+
+// What is wrong with a duration or a timestamp being parsed.
+//
+// The variants are prefixed because a variant is constructed by name
+// across the whole assembly, and `Overflow` and `EmptyInput` are names
+// every parser wants.
+pub enum HtError
+    // The input had nothing in it, or nothing but space.
+    HtEmptyInput
+    // A character that is neither a digit, a unit letter, a decimal
+    // point nor space.
+    //
+    // `at` is the byte offset and `ch` is the byte, so a caller can
+    // print the input with a caret under the problem.  A leading `-` is
+    // this rather than a sign: a duration is a length.
+    HtBadCharacter(at: Int, ch: Int)
+    // A run of letters that is not one of the grammar's units.
+    //
+    // `unit` is the spelling as it appeared, so the report can say
+    // `unknown unit 'mn'` rather than `unknown unit at 3`.  The most
+    // common one is `M` written where `m` was meant, or the reverse.
+    HtUnknownUnit(at: Int, unit: Str)
+    // A number with no unit after it.
+    //
+    // `"30"` is refused rather than read as thirty seconds: a bare
+    // number in a configuration file is ambiguous between seconds and
+    // milliseconds, and the two are three orders of magnitude apart.
+    HtNumberWithoutUnit(at: Int)
+    // A unit with no number before it — `"h"` on its own, or `"1h m"`.
+    HtUnitWithoutNumber(at: Int)
+    // The total is longer than `htdur.max_value`.
+    HtOverflow(at: Int)
+    // A timestamp that is not RFC 3339, with the byte offset where the
+    // shape stopped matching.
+    //
+    // One variant for the whole family — a missing `T`, a two-digit
+    // year, a month of 13 — because the caller's reaction is the same
+    // in every case and the offset is what narrows it.
+    HtBadTimestamp(at: Int)
+    // A timestamp whose fields are individually well formed and
+    // together name no day: the 30th of February, or the 25th hour.
+    //
+    // Separate from `HtBadTimestamp` because the input is SHAPED right
+    // and a caller reporting it wants to say so — this is a wrong date,
+    // not a malformed one.
+    HtTimestampOutOfRange(at: Int)
+
+// The standard `Error` implementation, so a bad duration can be
+// reported by anything that reports errors.
+impl Error for HtError
+    // Answer the one-line report: what was wrong and at what byte
+    // offset.  The offset is in the report rather than left for the
+    // caller to add, because a duration string has no other landmark.
+    fn message(self) -> Str
+        todo("humantime.HtError.message")
+
+// The byte offset the error was found at, or -1 for the ones that have
+// no position.
+//
+// One accessor rather than a `match` at every call site: a caller
+// printing a caret under the problem wants the number and does not
+// care which variant carried it.
+pub fn offset_of(e: HtError) -> Int
+    todo("humantime.offset_of")
+
+// ── Text into a length ──────────────────────────────────────────────
+
+// The duration `s` spells, as the seconds and nanoseconds `htdur.new`
+// takes.
+//
+// Terms are added, so `"1h 1h"` is two hours — the grammar does not
+// require a unit to appear once, and refusing a repeat would refuse
+// `"1h 30m 30s"` written as `"1h 30m 30s"` with a comment between the
+// terms, which is a thing configuration files do.
+//
+// ```novo
+// use htdur
+// use humantime
+//
+// fn main() [io]
+//     match humantime.parse_duration("2h 30m")
+//         Ok((secs, nanos)) => println("${htdur.new(secs, nanos).secs}")   // 9000
+//         Err(e)            => println(e.message())
+// ```
+pub fn parse_duration(s: Str) -> Result<(Int, Int), HtError>
+    todo("humantime.parse_duration")
+
+// The duration `s` spells, in whole seconds, with anything below a
+// second refused.
+//
+// The call a configuration reader wants when the consumer is a
+// second-resolution API — a cron-like schedule, an HTTP `max-age`, a
+// TTL — because a value that says `"500ms"` there is a value somebody
+// will be surprised by.  `HtBadCharacter` at the offset of the decimal
+// point or the sub-second unit.
+pub fn parse_duration_secs(s: Str) -> Result<Int, HtError>
+    todo("humantime.parse_duration_secs")
+
+// True when `s` is a duration this grammar accepts.
+//
+// For a validator that wants a yes or no without building the error —
+// a form field, a completion candidate, a linter.
+pub fn is_duration(s: Str) -> Bool
+    todo("humantime.is_duration")
+
+// ── A length into text ──────────────────────────────────────────────
+
+// The shortest spelling that means EXACTLY this length.
+//
+// Largest unit first, one term per unit that has a non-zero
+// coefficient, space-separated: `9000` seconds is `"2h 30m"`,
+// `1500000000` nanoseconds is `"1s 500ms"`, and zero is `"0s"` rather
+// than an empty string, because an empty string in a log says nothing.
+//
+// Exact, so it round-trips: `parse_duration(format_duration(d))` is `d`
+// for every `d`, and `tests/humantime_tests.nv` asserts it on the
+// awkward ones.  Years and months are used, so a length that happens to
+// be 31557600 seconds comes back as `"1year"` — which is what makes the
+// round trip exact rather than merely close.
+//
+// ```novo
+// use htdur
+// use humantime
+//
+// fn main() [io]
+//     println(humantime.format_duration(htdur.from_secs(9000)))   // 2h 30m
+// ```
+pub fn format_duration(d: HtDuration) -> Str
+    todo("humantime.format_duration")
+
+// The same spelling, with the terms below `floor` dropped.
+//
+// `format_duration` of a measured elapsed time is `"2h 30m 4s 112ms
+// 918us 41ns"`, which nobody reads.  This one takes the smallest unit
+// worth printing — `htdur.from_secs(1)` for a log line, and
+// `htdur.from_millis(1)` for a benchmark — and stops there, truncating
+// rather than rounding so the answer never overstates the length.
+//
+// A length shorter than `floor` prints as `"0s"` in the floor's unit,
+// not as nothing.
+pub fn format_duration_from(d: HtDuration, floor: HtDuration) -> Str
+    todo("humantime.format_duration_from")
+
+// The length as a person would say it: `"about 2 hours"`.
+//
+// ONE term, rounded, with a word in front of it that says how much was
+// rounded away.  `"2 hours"` when the length is a whole number of
+// hours, `"about 2 hours"` when it is not, `"just now"` for anything
+// under a second, `"1 second"` and `"2 seconds"` with the plural
+// agreeing.
+//
+// This is NOT humantime's exact formatter under another name, and it
+// does not round-trip: `parse_duration(format_approx(d))` is refused,
+// because `"about"` and `"just now"` are not in the grammar.  It is for
+// the place a person reads — a status line, a progress report, a
+// `last seen` column — and `format_duration` is for everywhere else.
+//
+// ```novo
+// use htdur
+// use humantime
+//
+// fn main() [io]
+//     println(humantime.format_approx(htdur.from_secs(7205)))   // about 2 hours
+//     println(humantime.format_approx(htdur.from_secs(7200)))   // 2 hours
+// ```
+pub fn format_approx(d: HtDuration) -> Str
+    todo("humantime.format_approx")
+
+// The name of the largest unit `d` reaches, singular or plural to
+// agree with `d`: `"hours"`, `"month"`, `"nanoseconds"`.
+//
+// What `format_approx` is built from, exposed because a caller
+// arranging its own sentence wants the noun without the number in front
+// of it.
+pub fn largest_unit_name(d: HtDuration) -> Str
+    todo("humantime.largest_unit_name")
