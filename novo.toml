@@ -1,6 +1,6 @@
 [package]
 name        = "humantime-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "humantime's grammar in both directions: \"2h 30m\", \"1.5s\", \"250ms\" and \"1y 2months\" into a length of time, and a length back into the shortest spelling that means exactly it — plus a rounded one a person reads, and the RFC 3339 timestamp half over calendar-nv's civil types with no clock in it.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
