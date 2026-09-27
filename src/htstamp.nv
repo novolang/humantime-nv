@@ -1,47 +1,116 @@
-// htstamp — RFC 3339 timestamps, both ways, over calendar-nv's civil
-// types and with no clock anywhere in it.
+// htstamp — RFC 3339 timestamps in both directions, over calendar-nv's
+// civil types, with no clock in it.
 //
-// Every body is a `todo()`.  The signatures are the design, and the
-// compiler checks them as claims; see the README for the stamp.
+// Nothing in this module reads the time.  `parse_rfc3339` takes text and
+// answers a `CivilDateTime`, `format_rfc3339` takes one and answers
+// text, and `since` takes two instants the caller already has.  A
+// caller who wants "now" gets it from `std.time` or from chrono-nv and
+// passes it in, and a test can pin the time by passing a different one.
 //
-// WHAT "NO CLOCK" MEANS HERE.  Nothing in this module reads the time.
-// `parse_rfc3339` takes text and answers a `CivilDateTime`;
-// `format_rfc3339` takes one and answers text; `since` takes TWO
-// instants the caller already has.  A caller who wants "now" gets it
-// from `std.time` or from chrono-nv and passes it in, which is what
-// keeps this package `core` and what lets a test pin the time by
-// passing a different one.
+// The profile is RFC 3339 section 5.6 with the offset fixed at `Z`,
+// which is the profile humantime implements.  A timestamp with another
+// offset has civil fields that are not the instant's, and reading it
+// correctly needs the offset carried beside the value.  calendar-nv's
+// `iso8601.parse_rfc3339` answers the offset as a second value, and
+// tz-nv turns an offset into a zone.
 //
-// WHY IT IS UTC AND NOTHING ELSE.  humantime's `parse_rfc3339` accepts
-// only `Z` — the profile it implements is RFC 3339 with a zero offset —
-// and the same restriction is kept, for the same reason: a timestamp
-// with an offset in it is a timestamp whose civil fields are not the
-// instant's, and reading one correctly needs a zone rule this package
-// does not have.  calendar-nv's `iso8601.parse_rfc3339` is the one that
-// answers the offset as a second value; use that, and tz-nv when the
-// offset has to become a zone.
+// There are two parsers.  `parse_rfc3339` is strict: exactly
+// `YYYY-MM-DDTHH:MM:SS`, an optional fraction and a `Z`, for a wire
+// format, a log line or a signed token.  `parse_rfc3339_weak` also takes
+// a space for the `T`, no `Z`, and a date alone, for text a person
+// typed.  They are two functions rather than one with a flag, so a call
+// site says where its text came from.
 //
-// THE TWO PARSERS.  `parse_rfc3339` is STRICT — exactly
-// `YYYY-MM-DDTHH:MM:SS` with an optional fractional part and a
-// mandatory `Z` — and is what a wire format, a log line and a signed
-// token should be read with.  `parse_rfc3339_weak` is humantime's
-// lenient one, for text a person typed: a space instead of the `T`, a
-// missing `Z`, a bare date meaning midnight.  Two functions and not a
-// flag, because the choice is about where the text came from and a
-// caller that passed a variable would not be able to say which it
-// meant.
+// RFC 3339 writes a year in four digits.  A `CivilDate` outside the
+// years 0 to 9999 is written with more digits, or with a sign, and the
+// parsers refuse that text.
+
+use std.str
+use civil
+use arith
+use htdur
+use humantime
+
+// The byte at `i`, or -1 past the end.
+fn at(s: Str, i: Int) -> Int
+    str.byte_at_or(s, i, -1)
+
+// The value of exactly `n` digits at `i`, or `HtBadTimestamp` at the
+// first byte that is not a digit.
+fn digits(s: Str, i: Int, n: Int) -> Result<Int, HtError>
+    var v = 0
+    for k in i..i + n
+        let b = at(s, k)
+        if b < '0' or b > '9'
+            return Err(HtBadTimestamp(k))
+        v = v * 10 + b - '0'
+    Ok(v)
+
+// `HtBadTimestamp` at `i` unless the byte there is `want`.
+fn expect(s: Str, i: Int, want: Int) -> Result<Unit, HtError>
+    if at(s, i) != want
+        return Err(HtBadTimestamp(i))
+    Ok(())
+
+// `YYYY-MM-DD` at offset 0, checked against the calendar.
+fn read_date(s: Str) -> Result<CivilDate, HtError>
+    let y = digits(s, 0, 4)!
+    expect(s, 4, '-')!
+    let m = digits(s, 5, 2)!
+    expect(s, 7, '-')!
+    let d = digits(s, 8, 2)!
+    if m < 1 or m > 12
+        return Err(HtTimestampOutOfRange(5))
+    match civil.date(y, m, d)
+        Ok(date) => Ok(date)
+        Err(_)   => Err(HtTimestampOutOfRange(8))
+
+// `HH:MM:SS` at offset 11 and an optional fraction after it, with the
+// offset of the first byte past them.
+fn read_time(s: Str) -> Result<(CivilTime, Int), HtError>
+    let h = digits(s, 11, 2)!
+    expect(s, 13, ':')!
+    let minute = digits(s, 14, 2)!
+    expect(s, 16, ':')!
+    let sec = digits(s, 17, 2)!
+    if h > 23
+        return Err(HtTimestampOutOfRange(11))
+    if minute > 59
+        return Err(HtTimestampOutOfRange(14))
+    if sec > 59
+        return Err(HtTimestampOutOfRange(17))
+    let (nano, next) = read_fraction(s, 19)!
+    Ok((CivilTime { hour: h, minute: minute, second: sec, nano: nano }, next))
+
+// An optional `.` and one to nine digits at `i`, as nanoseconds, with
+// the offset past them.  No fraction is zero nanoseconds.
+fn read_fraction(s: Str, i: Int) -> Result<(Int, Int), HtError>
+    if at(s, i) != '.'
+        return Ok((0, i))
+    var nano = 0
+    var j = i + 1
+    while at(s, j) >= '0' and at(s, j) <= '9'
+        if j - i > 9
+            return Err(HtBadTimestamp(j))
+        nano = nano * 10 + at(s, j) - '0'
+        j = j + 1
+    if j == i + 1
+        return Err(HtBadTimestamp(j))
+    for _k in j - i..10
+        nano = nano * 10
+    Ok((nano, j))
 
 // The instant `s` names, as calendar-nv's civil date and time.
 //
-// STRICT: `YYYY-MM-DDTHH:MM:SS`, an optional `.` and one to nine
-// fractional digits, then `Z`.  Anything else is `HtBadTimestamp` with
-// the offset where the shape stopped matching; a well-shaped timestamp
-// naming no real day — the 30th of February — is
-// `HtTimestampOutOfRange`.
+// Strict: `YYYY-MM-DDTHH:MM:SS`, an optional `.` and one to nine
+// fractional digits, then `Z`, and nothing after it.  Anything else is
+// `HtBadTimestamp` at the offset where the shape stopped matching.  A
+// well-shaped timestamp naming no instant, such as the 30th of February
+// or a 25th hour, is `HtTimestampOutOfRange` at the offset of the field.
 //
-// A leap second (`:60`) is refused.  calendar-nv's `CivilTime` has no
-// 60th second, and a timestamp this package silently moved to the next
-// minute would be a timestamp that does not round-trip.
+// A leap second (`:60`) is refused as out of range.  calendar-nv's
+// `CivilTime` has no 60th second, and a timestamp moved to the next
+// minute would not round-trip.
 //
 // ```novo
 // use htstamp
@@ -52,16 +121,22 @@
 //         Err(e) => println(e.message())
 // ```
 pub fn parse_rfc3339(s: Str) -> Result<CivilDateTime, HtError>
-    todo("htstamp.parse_rfc3339")
+    let day = read_date(s)!
+    expect(s, 10, 'T')!
+    let (clock, next) = read_time(s)!
+    expect(s, next, 'Z')!
+    if next + 1 < str.len(s)
+        return Err(HtBadTimestamp(next + 1))
+    Ok(civil.datetime(day, clock))
 
 // The instant `s` names, read leniently.
 //
-// Accepts everything `parse_rfc3339` does, and three more shapes a
-// person types: a space where the `T` goes, a missing trailing `Z`, and
-// a date alone — which means midnight at the start of that day.  For
-// a command-line argument, a spreadsheet column, a log a human wrote.
+// Accepts everything `parse_rfc3339` does and three more shapes a
+// person types: a space where the `T` goes, no trailing `Z`, and a date
+// alone, which means midnight at the start of that day.  For a
+// command-line argument, a spreadsheet column, a log a person wrote.
 //
-// It is still UTC: a lenient parser that guessed a local zone would
+// It is still UTC.  A lenient parser that assumed a local zone would
 // give two machines two different answers for the same text.
 //
 // ```novo
@@ -73,25 +148,60 @@ pub fn parse_rfc3339(s: Str) -> Result<CivilDateTime, HtError>
 //         Err(e) => println(e.message())
 // ```
 pub fn parse_rfc3339_weak(s: Str) -> Result<CivilDateTime, HtError>
-    todo("htstamp.parse_rfc3339_weak")
+    let day = read_date(s)!
+    let n = str.len(s)
+    if n == 10
+        return Ok(civil.datetime(day, civil.midnight()))
+    let sep = at(s, 10)
+    if sep != 'T' and sep != ' '
+        return Err(HtBadTimestamp(10))
+    let (clock, next) = read_time(s)!
+    let end = if at(s, next) == 'Z'
+        next + 1
+    else
+        next
+    if end < n
+        return Err(HtBadTimestamp(end))
+    Ok(civil.datetime(day, clock))
 
 // True when `s` is a timestamp `parse_rfc3339` accepts.
 pub fn is_rfc3339(s: Str) -> Bool
-    todo("htstamp.is_rfc3339")
+    match parse_rfc3339(s)
+        Ok(_)  => true
+        Err(_) => false
 
-// ── Formatting, one function per precision ──────────────────────────
-//
-// Five, because the precision is a decision the caller makes once and
-// an argument would let it vary between two lines of the same log.  A
-// log whose timestamps are sometimes six digits and sometimes nine does
-// not sort as text, which is the one property a timestamp format is
-// chosen for.
+// `n` written with at least `width` digits, zero-padded on the left.
+fn pad(n: Int, width: Int) -> Str
+    str.pad_left("${n}", width, "0")
+
+// The year as RFC 3339 writes it: four digits, and a sign before a
+// negative one.
+fn year_text(y: Int) -> Str
+    if y < 0
+        "-${pad(-y, 4)}"
+    else
+        pad(y, 4)
+
+// `YYYY-MM-DDTHH:MM:SS`, the part every precision shares.
+fn whole_seconds(dt: CivilDateTime) -> Str
+    let d = dt.date
+    let t = dt.time
+    "${year_text(d.year)}-${pad(d.month, 2)}-${pad(d.day, 2)}T${pad(t.hour, 2)}:${pad(t.minute, 2)}:${pad(t.second, 2)}"
+
+// The instant with `digits` fractional digits, truncated.
+fn with_digits(dt: CivilDateTime, digits: Int) -> Str
+    if digits == 0
+        return "${whole_seconds(dt)}Z"
+    var cut = dt.time.nano
+    for _k in digits..9
+        cut = cut / 10
+    "${whole_seconds(dt)}.${pad(cut, digits)}Z"
 
 // The instant, with as few fractional digits as say it exactly.
 //
-// No fractional part at all when the nanoseconds are zero, three when
+// No fractional part when the nanoseconds are zero, three digits when
 // they are a whole number of milliseconds, six for microseconds, nine
-// otherwise.  The shortest spelling that round-trips, which is what
+// otherwise.  It is the shortest spelling that round-trips, as
 // `format_duration` is for a length.
 //
 // ```novo
@@ -102,47 +212,54 @@ pub fn is_rfc3339(s: Str) -> Bool
 //     println(htstamp.format_rfc3339(dt))   // 2026-09-11T14:30:00Z
 // ```
 pub fn format_rfc3339(dt: CivilDateTime) -> Str
-    todo("htstamp.format_rfc3339")
+    let n = dt.time.nano
+    if n == 0
+        with_digits(dt, 0)
+    else if n % 1000000 == 0
+        with_digits(dt, 3)
+    else if n % 1000 == 0
+        with_digits(dt, 6)
+    else
+        with_digits(dt, 9)
 
 // The instant to the second: `2026-09-11T14:30:00Z`.
 //
-// Any fractional part is TRUNCATED, not rounded — a timestamp that
-// rounded up would name an instant that had not happened yet.
+// Any fractional part is truncated, not rounded.  A timestamp that
+// rounded up would name an instant that had not happened yet.  The
+// three formatters after this one truncate the same way.
 pub fn format_rfc3339_seconds(dt: CivilDateTime) -> Str
-    todo("htstamp.format_rfc3339_seconds")
+    with_digits(dt, 0)
 
 // The instant to the millisecond: `2026-09-11T14:30:00.000Z`.
 //
 // Always three digits, including `.000`, so a column of these lines up
 // and sorts as text.
 pub fn format_rfc3339_millis(dt: CivilDateTime) -> Str
-    todo("htstamp.format_rfc3339_millis")
+    with_digits(dt, 3)
 
 // The instant to the microsecond: `2026-09-11T14:30:00.000000Z`.
 pub fn format_rfc3339_micros(dt: CivilDateTime) -> Str
-    todo("htstamp.format_rfc3339_micros")
+    with_digits(dt, 6)
 
 // The instant to the nanosecond: `2026-09-11T14:30:00.000000000Z`.
 //
-// The full resolution `CivilTime.nano` holds, and the one a caller
-// comparing two timestamps for equality should be writing.
+// The full resolution `CivilTime.nano` holds.
 pub fn format_rfc3339_nanos(dt: CivilDateTime) -> Str
-    todo("htstamp.format_rfc3339_nanos")
+    with_digits(dt, 9)
 
-// ── The bridge between an instant and a length ──────────────────────
-
-// How long it is from `earlier` to `later`, as the seconds and
-// nanoseconds `htdur.new` takes.
+// How long it is from `earlier` to `later`.
 //
-// The one call that makes a timestamp and a duration the same story,
-// and the reason there is no clock in the package: both instants come
-// from the caller.  A `later` that is before `earlier` is
-// `HtTimestampOutOfRange` at offset -1 — the length has no sign, and a
+// Every date calendar-nv holds lies within two billion years of every
+// other, about 6.3 × 10^16 seconds, so the difference fits an `Int` and
+// is exact.
+//
+// Both instants come from the caller, which is why there is no clock in
+// the package.  A `later` that is before `earlier` is
+// `HtTimestampOutOfRange` at offset -1.  The length has no sign, and a
 // caller who wants one wants `to_time_delta` and calendar-nv's signed
 // arithmetic.
 //
 // ```novo
-// use htdur
 // use htstamp
 // use humantime
 //
@@ -150,41 +267,66 @@ pub fn format_rfc3339_nanos(dt: CivilDateTime) -> Str
 //     let a = htstamp.parse_rfc3339("2026-09-11T14:00:00Z")!
 //     let b = htstamp.parse_rfc3339("2026-09-11T16:30:00Z")!
 //     match htstamp.since(a, b)
-//         Ok((secs, nanos)) => println(humantime.format_duration(htdur.new(secs, nanos)))
-//         Err(e)            => println(e.message())
-//     // 2h 30m
+//         Ok(d)  => println(humantime.format_duration(d))   // 2h 30m
+//         Err(e) => println(e.message())
 // ```
-pub fn since(earlier: CivilDateTime, later: CivilDateTime) -> Result<(Int, Int), HtError>
-    todo("htstamp.since")
+pub fn since(earlier: CivilDateTime, later: CivilDateTime) -> Result<HtDuration, HtError>
+    let days = civil.epoch_day(later.date) - civil.epoch_day(earlier.date)
+    let secs = days * 86400 + second_of_day(later.time) - second_of_day(earlier.time)
+    let nanos = later.time.nano - earlier.time.nano
+    if secs < 0 or secs == 0 and nanos < 0
+        return Err(HtTimestampOutOfRange(-1))
+    if nanos < 0
+        return Ok(htdur.new(secs - 1, nanos + 1000000000))
+    Ok(htdur.new(secs, nanos))
+
+// The whole seconds since midnight.
+fn second_of_day(t: CivilTime) -> Int
+    t.hour * 3600 + t.minute * 60 + t.second
 
 // `dt` advanced by `d`.
 //
-// Exact-length arithmetic, so a `d` built from `htdur.from_months`
-// advances by 30.4375 days and not to the same day of the next month.
-// calendar-nv's `arith.add_months` is the calendar one, and the README
-// has the table of which to reach for.
+// Exact-length arithmetic, so a `d` built by `htdur.from_months`
+// advances 30.4375 days and not to the same day of the next month.
+// calendar-nv's `arith.add_months` is the calendar one.  A result past
+// calendar-nv's range of years is `HtTimestampOutOfRange` at -1.
 pub fn add(dt: CivilDateTime, d: HtDuration) -> Result<CivilDateTime, HtError>
-    todo("htstamp.add")
+    match arith.add_delta(dt, to_time_delta(d))
+        Ok(moved) => Ok(moved)
+        Err(_)    => Err(HtTimestampOutOfRange(-1))
 
-// `dt` moved back by `d`.
+// `dt` moved back by `d`.  A result past calendar-nv's range of years
+// is `HtTimestampOutOfRange` at -1.
 pub fn sub(dt: CivilDateTime, d: HtDuration) -> Result<CivilDateTime, HtError>
-    todo("htstamp.sub")
+    match arith.add_delta(dt, negated(d))
+        Ok(moved) => Ok(moved)
+        Err(_)    => Err(HtTimestampOutOfRange(-1))
 
-// ── The bridge to calendar-nv's own duration ────────────────────────
+// `-d` as calendar-nv's `TimeDelta`, whose sign is in the seconds and
+// whose nanoseconds are never negative.  The most negative result is
+// the smallest `Int`, so it cannot overflow.
+fn negated(d: HtDuration) -> TimeDelta
+    if d.nanos == 0
+        TimeDelta { secs: -d.secs, nanos: 0 }
+    else
+        TimeDelta { secs: -d.secs - 1, nanos: 1000000000 - d.nanos }
 
 // The same length as calendar-nv's signed `TimeDelta`.
 //
-// Always succeeds: every `HtDuration` is a non-negative `TimeDelta`.
-// What a caller reaches for the moment the length has to be subtracted
-// from something, or compared against something that might be earlier.
+// It always succeeds, because every `HtDuration` is a non-negative
+// `TimeDelta`.  A caller reaches for it the moment the length has to be
+// subtracted from something, or compared with something that might be
+// earlier.
 pub fn to_time_delta(d: HtDuration) -> TimeDelta
-    todo("htstamp.to_time_delta")
+    TimeDelta { secs: d.secs, nanos: d.nanos }
 
-// A `TimeDelta` as the seconds and nanoseconds `htdur.new` takes.
+// A `TimeDelta` as a length.
 //
-// `HtTimestampOutOfRange` at offset -1 for a NEGATIVE delta, which is
-// the whole reason this direction can fail: calendar-nv's type has a
-// sign and this package's does not, and a conversion that dropped the
-// sign would turn "three hours ago" into "in three hours".
-pub fn from_time_delta(td: TimeDelta) -> Result<(Int, Int), HtError>
-    todo("htstamp.from_time_delta")
+// A negative delta is `HtTimestampOutOfRange` at offset -1, and that is
+// the only way this direction fails.  calendar-nv's type has a sign and
+// this package's does not, and a conversion that dropped the sign would
+// turn "three hours ago" into "in three hours".
+pub fn from_time_delta(td: TimeDelta) -> Result<HtDuration, HtError>
+    if td.secs < 0
+        return Err(HtTimestampOutOfRange(-1))
+    Ok(htdur.new(td.secs, td.nanos))

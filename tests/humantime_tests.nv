@@ -1,18 +1,11 @@
-// tests/humantime_tests.nv — the API tests, written against the
-// signatures.
+// tests/humantime_tests.nv — the API tests, one or more per function.
 //
-// They COMPILE today and they FAIL at run, with `not implemented:
-// <module>.<fn>` from the `todo()` that is each body.  That is the
-// expected state of an interface release: the compiler has checked
-// every signature, every type and every effect row, and nothing else
-// has been checked because there is nothing else yet.
-//
-// WHERE THE VECTORS COME FROM.  `humantime`'s own documented examples —
-// `"2h 37m"`, `"1.5s"`, `"3 days"`, `"250ms"`, `"1y 2months"`, and the
-// unit table with `m` for minutes and `M` for months — and RFC 3339
-// § 5.8's sample timestamps.  Every number below follows from the unit
-// lengths the grammar defines: a year is 31557600 seconds and a month
-// is 2630016, so no vector needs a reference implementation to check.
+// The vectors are humantime's documented examples: `"2h 37m"`,
+// `"1.5s"`, `"3 days"`, `"250ms"`, `"1y 2months"`, and the unit table
+// with `m` for minutes and `M` for months.  The timestamps follow RFC
+// 3339 section 5.8.  Every number below follows from the unit lengths
+// the grammar defines: a year is 31557600 seconds and a month is
+// 2630016.
 
 use std.test
 use htdur
@@ -24,52 +17,52 @@ use htstamp
 @test
 fn test_the_terms_are_added()
     match humantime.parse_duration("2h 30m")
-        Ok((secs, nanos)) =>
-            test.assert_eq(secs, 9000)
-            test.assert_eq(nanos, 0)
-        Err(e)            => test.fail(e.message())
+        Ok(d)  =>
+            test.assert_eq(d.secs, 9000)
+            test.assert_eq(d.nanos, 0)
+        Err(e) => test.fail(e.message())
 
 @test
 fn test_a_decimal_point_in_the_number()
     match humantime.parse_duration("1.5s")
-        Ok((secs, nanos)) =>
-            test.assert_eq(secs, 1)
-            test.assert_eq(nanos, 500000000)
-        Err(e)            => test.fail(e.message())
+        Ok(d)  =>
+            test.assert_eq(d.secs, 1)
+            test.assert_eq(d.nanos, 500000000)
+        Err(e) => test.fail(e.message())
 
 @test
 fn test_the_space_between_a_number_and_its_unit_is_optional()
     match humantime.parse_duration("3 days")
-        Ok((secs, _n)) => test.assert_eq(secs, 259200)
-        Err(e)         => test.fail(e.message())
+        Ok(d)  => test.assert_eq(d.secs, 259200)
+        Err(e) => test.fail(e.message())
     match humantime.parse_duration("3days")
-        Ok((secs, _n)) => test.assert_eq(secs, 259200)
-        Err(e)         => test.fail(e.message())
+        Ok(d)  => test.assert_eq(d.secs, 259200)
+        Err(e) => test.fail(e.message())
 
 @test
 fn test_the_sub_second_units()
     match humantime.parse_duration("250ms")
-        Ok((secs, nanos)) =>
-            test.assert_eq(secs, 0)
-            test.assert_eq(nanos, 250000000)
-        Err(e)            => test.fail(e.message())
+        Ok(d)  =>
+            test.assert_eq(d.secs, 0)
+            test.assert_eq(d.nanos, 250000000)
+        Err(e) => test.fail(e.message())
     match humantime.parse_duration("1us")
-        Ok((secs, nanos)) =>
-            test.assert_eq(secs, 0)
-            test.assert_eq(nanos, 1000)
-        Err(e)            => test.fail(e.message())
+        Ok(d)  =>
+            test.assert_eq(d.secs, 0)
+            test.assert_eq(d.nanos, 1000)
+        Err(e) => test.fail(e.message())
     match humantime.parse_duration("1ns")
-        Ok((secs, nanos)) =>
-            test.assert_eq(secs, 0)
-            test.assert_eq(nanos, 1)
-        Err(e)            => test.fail(e.message())
+        Ok(d)  =>
+            test.assert_eq(d.secs, 0)
+            test.assert_eq(d.nanos, 1)
+        Err(e) => test.fail(e.message())
 
 @test
 fn test_a_year_is_365_and_a_quarter_days_and_a_month_is_a_twelfth_of_one()
     // The grammar's fixed lengths, not calendar arithmetic.
     match humantime.parse_duration("1y 2months")
-        Ok((secs, _n)) => test.assert_eq(secs, 36817632)
-        Err(e)         => test.fail(e.message())
+        Ok(d)  => test.assert_eq(d.secs, 36817632)
+        Err(e) => test.fail(e.message())
     test.assert_eq(htdur.year_secs(), 31557600)
     test.assert_eq(htdur.month_secs(), 2630016)
 
@@ -78,20 +71,20 @@ fn test_lowercase_m_is_minutes_and_uppercase_m_is_months()
     // The one place the grammar is case-sensitive, and the one place a
     // reader gets it wrong.
     match humantime.parse_duration("1m")
-        Ok((secs, _n)) => test.assert_eq(secs, 60)
-        Err(e)         => test.fail(e.message())
+        Ok(d)  => test.assert_eq(d.secs, 60)
+        Err(e) => test.fail(e.message())
     match humantime.parse_duration("1M")
-        Ok((secs, _n)) => test.assert_eq(secs, 2630016)
-        Err(e)         => test.fail(e.message())
+        Ok(d)  => test.assert_eq(d.secs, 2630016)
+        Err(e) => test.fail(e.message())
 
 @test
 fn test_the_long_spellings_of_every_unit()
     match humantime.parse_duration("1second 1minute 1hour 1day 1week")
-        Ok((secs, _n)) => test.assert_eq(secs, 694861)
-        Err(e)         => test.fail(e.message())
+        Ok(d)  => test.assert_eq(d.secs, 694861)
+        Err(e) => test.fail(e.message())
     match humantime.parse_duration("2seconds 2minutes 2hours")
-        Ok((secs, _n)) => test.assert_eq(secs, 7322)
-        Err(e)         => test.fail(e.message())
+        Ok(d)  => test.assert_eq(d.secs, 7322)
+        Err(e) => test.fail(e.message())
 
 @test
 fn test_a_bare_number_is_refused_rather_than_read_as_seconds()
@@ -198,13 +191,13 @@ fn test_the_exact_spelling_round_trips()
     assert_round_trips(htdur.from_nanos(1))
     assert_round_trips(htdur.zero())
 
-fn assert_round_trips(d: HtDuration)
-    let text = humantime.format_duration(d)
+fn assert_round_trips(want: HtDuration)
+    let text = humantime.format_duration(want)
     match humantime.parse_duration(text)
-        Ok((secs, nanos)) =>
-            test.assert_eq(secs, d.secs)
-            test.assert_eq(nanos, d.nanos)
-        Err(e)            => test.fail("${text}: ${e.message()}")
+        Ok(d)  =>
+            test.assert_eq(d.secs, want.secs)
+            test.assert_eq(d.nanos, want.nanos)
+        Err(e) => test.fail("${text}: ${e.message()}")
 
 @test
 fn test_the_floor_drops_the_terms_nobody_reads()
@@ -428,10 +421,10 @@ fn test_since_takes_both_instants_because_there_is_no_clock_here()
     let a = htstamp.parse_rfc3339("2026-09-11T14:00:00Z")!
     let b = htstamp.parse_rfc3339("2026-09-11T16:30:00Z")!
     match htstamp.since(a, b)
-        Ok((secs, nanos)) =>
-            test.assert_eq(secs, 9000)
-            test.assert_eq(nanos, 0)
-        Err(e)            => test.fail(e.message())
+        Ok(d)  =>
+            test.assert_eq(d.secs, 9000)
+            test.assert_eq(d.nanos, 0)
+        Err(e) => test.fail(e.message())
 
 @test
 fn test_since_refuses_a_later_that_is_earlier()
@@ -458,7 +451,7 @@ fn test_add_and_sub_move_an_instant_by_an_exact_length()
 
 @test
 fn test_adding_a_month_here_is_thirty_days_and_ten_and_a_half_hours()
-    // NOT the same day of the next month.  `arith.add_months` in
+    // Not the same day of the next month.  `arith.add_months` in
     // calendar-nv is the calendar one.
     let dt = htstamp.parse_rfc3339("2026-01-31T00:00:00Z")!
     match htstamp.add(dt, htdur.from_months(1))
@@ -479,10 +472,10 @@ fn test_a_negative_time_delta_has_no_length_to_become()
     // into "in three hours".
     let ok = span.seconds(9000)
     match htstamp.from_time_delta(ok)
-        Ok((secs, nanos)) =>
-            test.assert_eq(secs, 9000)
-            test.assert_eq(nanos, 0)
-        Err(e)            => test.fail(e.message())
+        Ok(d)  =>
+            test.assert_eq(d.secs, 9000)
+            test.assert_eq(d.nanos, 0)
+        Err(e) => test.fail(e.message())
     let backwards = span.seconds(-1)
     match htstamp.from_time_delta(backwards)
         Ok(_)  => test.fail("a length has no sign")

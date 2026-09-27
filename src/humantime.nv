@@ -1,90 +1,101 @@
-// humantime — the grammar, both ways: `"2h 30m"` into a length of time
-// and a length of time back into the shortest spelling that means it.
+// humantime — the grammar in both directions: `"2h 30m"` into a length
+// of time, and a length of time back into the shortest spelling that
+// means it.
 //
-// Every body is a `todo()`.  The signatures are the design, and the
-// compiler checks them as claims; see the README for the stamp.
+// A duration is one or more terms.  A term is a number and a unit, and
+// the terms are added: `"2h 30m"` is two and a half hours and `"1h 1h"`
+// is two hours.  The number may carry a decimal point, so `"1.5s"` is a
+// second and a half.  A space or a tab may stand between the number and
+// its unit, and between two terms, and neither is required.
 //
-// THE GRAMMAR, in one paragraph.  A duration is one or more TERMS with
-// optional space between them; a term is a number and a unit; the
-// number may carry a decimal point; the terms are ADDED.  So `"2h 30m"`
-// is two and a half hours, `"1.5s"` is fifteen hundred milliseconds,
-// `"3 days"` is three days, `"250ms"` is a quarter of a second, and
-// `"1y 2months"` is a year and two twelfths of one.  The units are
-// `ns`, `us`/`µs`, `ms`, `s`/`sec`/`secs`/`second`/`seconds`,
-// `m`/`min`/`mins`/`minute`/`minutes`, `h`/`hr`/`hrs`/`hour`/`hours`,
-// `d`/`day`/`days`, `w`/`week`/`weeks`, `M`/`month`/`months`, and
-// `y`/`year`/`years`.
+// The units and their spellings are humantime's, listed in `unit_of`.
+// `m` is minutes and `M` is months.  That is the one place the grammar
+// is case-sensitive, and it is humantime's rule.
 //
-// `m` IS MINUTES AND `M` IS MONTHS, which is the one place the grammar
-// is case-sensitive and the one place a reader gets it wrong.  It is
-// humantime's rule and it is kept, because a package that quietly
-// differed from the grammar it is named after would be worse than one
-// that carries an awkward rule and says so.
-//
-// WHY THERE IS NO SIGN AND NO EXPONENT.  A duration is a length, and a
-// length has neither.  `"-5s"` is `HtBadCharacter` at offset 0, not
-// minus five seconds.
-//
-// WHY A PARSE ANSWERS A PAIR OF INTEGERS.  A `@value` struct may not be
-// the payload of a `Result` — it is unboxed, and the position has no
-// unboxed lowering — so the fallible direction answers the seconds and
-// the nanoseconds that `htdur.new` takes, and that call is the line
-// which follows.
+// A length has no sign and no exponent, so `"-5s"` is `HtBadCharacter`
+// at offset 0 rather than minus five seconds.  A fractional part past
+// the ninth digit is read and dropped, because no unit divides finer
+// than a nanosecond.
+
+use std.str
+use std.math
+use std.list
+use htdur
 
 // What is wrong with a duration or a timestamp being parsed.
 //
 // The variants are prefixed because a variant is constructed by name
-// across the whole assembly, and `Overflow` and `EmptyInput` are names
+// across the whole program, and `Overflow` and `EmptyInput` are names
 // every parser wants.
 pub enum HtError
     // The input had nothing in it, or nothing but space.
     HtEmptyInput
-    // A character that is neither a digit, a unit letter, a decimal
-    // point nor space.
+    // A byte that is neither a digit, a unit letter, a decimal point
+    // nor space.
     //
     // `at` is the byte offset and `ch` is the byte, so a caller can
     // print the input with a caret under the problem.  A leading `-` is
-    // this rather than a sign: a duration is a length.
+    // this rather than a sign, because a duration is a length.
     HtBadCharacter(at: Int, ch: Int)
     // A run of letters that is not one of the grammar's units.
     //
     // `unit` is the spelling as it appeared, so the report can say
-    // `unknown unit 'mn'` rather than `unknown unit at 3`.  The most
-    // common one is `M` written where `m` was meant, or the reverse.
+    // `unknown unit 'mn'` rather than name only an offset.
     HtUnknownUnit(at: Int, unit: Str)
     // A number with no unit after it.
     //
-    // `"30"` is refused rather than read as thirty seconds: a bare
+    // `"30"` is refused rather than read as thirty seconds.  A bare
     // number in a configuration file is ambiguous between seconds and
     // milliseconds, and the two are three orders of magnitude apart.
     HtNumberWithoutUnit(at: Int)
-    // A unit with no number before it — `"h"` on its own, or `"1h m"`.
+    // A unit with no number before it: `"h"` on its own, or `"1h m"`.
     HtUnitWithoutNumber(at: Int)
-    // The total is longer than `htdur.max_value`.
+    // The total is longer than `htdur.max_value`.  `at` is the offset of
+    // the number of the term that passed it.
     HtOverflow(at: Int)
-    // A timestamp that is not RFC 3339, with the byte offset where the
-    // shape stopped matching.
-    //
-    // One variant for the whole family — a missing `T`, a two-digit
-    // year, a month of 13 — because the caller's reaction is the same
-    // in every case and the offset is what narrows it.
+    // A timestamp that is not the RFC 3339 shape, with the byte offset
+    // where the shape stopped matching: a missing `T`, a two-digit year,
+    // an offset other than `Z`.
     HtBadTimestamp(at: Int)
-    // A timestamp whose fields are individually well formed and
-    // together name no day: the 30th of February, or the 25th hour.
+    // A timestamp whose fields are each well formed and together name
+    // no instant: the 30th of February, a 25th hour, a 60th second.
     //
-    // Separate from `HtBadTimestamp` because the input is SHAPED right
-    // and a caller reporting it wants to say so — this is a wrong date,
-    // not a malformed one.
+    // `at` is the offset of the field that is out of range.  The
+    // arithmetic in `htstamp` reports it at offset -1, where there is no
+    // text.  It is separate from `HtBadTimestamp` because the input is
+    // shaped right, and a caller reporting it can say the date is wrong
+    // rather than malformed.
     HtTimestampOutOfRange(at: Int)
 
 // The standard `Error` implementation, so a bad duration can be
-// reported by anything that reports errors.
+// reported by anything that reports errors (SPEC § 3.4).
 impl Error for HtError
-    // Answer the one-line report: what was wrong and at what byte
-    // offset.  The offset is in the report rather than left for the
-    // caller to add, because a duration string has no other landmark.
+    // The one-line report: what was wrong and at which byte offset.
     fn message(self) -> Str
-        todo("humantime.HtError.message")
+        match self
+            HtEmptyInput              => "empty duration"
+            HtBadCharacter(at, ch)    => "unexpected ${describe_byte(ch)} at offset ${at}"
+            HtUnknownUnit(at, unit)   => "unknown unit '${unit}' at offset ${at}"
+            HtNumberWithoutUnit(at)   => "number without a unit at offset ${at}"
+            HtUnitWithoutNumber(at)   => "unit without a number at offset ${at}"
+            HtOverflow(at)            => "duration too long, at offset ${at}"
+            HtBadTimestamp(at)        => "not an RFC 3339 timestamp: stopped at offset ${at}"
+            HtTimestampOutOfRange(at) => out_of_range_message(at)
+
+// A byte as a message shows it: the character when it is printable
+// ASCII, the number otherwise.
+fn describe_byte(ch: Int) -> Str
+    if ch >= ' ' and ch <= '~'
+        "character '${str.from_byte(ch)}'"
+    else
+        "byte ${ch}"
+
+// The message for a timestamp out of range, with or without an offset.
+fn out_of_range_message(at: Int) -> Str
+    if at < 0
+        "timestamp out of range"
+    else
+        "timestamp field out of range at offset ${at}"
 
 // The byte offset the error was found at, or -1 for the ones that have
 // no position.
@@ -92,63 +103,347 @@ impl Error for HtError
 // One accessor rather than a `match` at every call site: a caller
 // printing a caret under the problem wants the number and does not
 // care which variant carried it.
+//
+// ```novo
+// use humantime
+//
+// fn main() [io]
+//     match humantime.parse_duration("1mn")
+//         Ok(_)  => println("accepted")
+//         Err(e) => println("${humantime.offset_of(e)}")   // 1
+// ```
 pub fn offset_of(e: HtError) -> Int
-    todo("humantime.offset_of")
+    match e
+        HtEmptyInput              => -1
+        HtBadCharacter(at, _)     => at
+        HtUnknownUnit(at, _)      => at
+        HtNumberWithoutUnit(at)   => at
+        HtUnitWithoutNumber(at)   => at
+        HtOverflow(at)            => at
+        HtBadTimestamp(at)        => at
+        HtTimestampOutOfRange(at) => at
+
+// ── The units ───────────────────────────────────────────────────────
+//
+// A unit is a small integer, smallest first: 0 nanosecond,
+// 1 microsecond, 2 millisecond, 3 second, 4 minute, 5 hour, 6 day,
+// 7 week, 8 month, 9 year.
+
+// The unit a spelling names, or -1 when it names none.
+//
+// These are humantime's spellings, all of them and no others.
+fn unit_of(s: Str) -> Int
+    match s
+        "ns" | "nsec" | "nanos"                     => 0
+        "us" | "µs" | "usec"                       => 1
+        "ms" | "msec" | "millis"                    => 2
+        "s" | "sec" | "secs" | "second" | "seconds" => 3
+        "m" | "min" | "mins" | "minute" | "minutes" => 4
+        "h" | "hr" | "hrs" | "hour" | "hours"       => 5
+        "d" | "day" | "days"                        => 6
+        "w" | "week" | "weeks"                      => 7
+        "M" | "month" | "months"                    => 8
+        "y" | "year" | "years"                      => 9
+        _                                           => -1
+
+// The whole seconds in one of a unit, or 0 for the three below a
+// second.
+fn unit_secs(u: Int) -> Int
+    match u
+        3 => 1
+        4 => htdur.minute_secs()
+        5 => htdur.hour_secs()
+        6 => htdur.day_secs()
+        7 => htdur.week_secs()
+        8 => htdur.month_secs()
+        9 => htdur.year_secs()
+        _ => 0
+
+// How many of a unit below a second make a second: 10^9 for the
+// nanosecond, 10^6 for the microsecond and 10^3 for the millisecond.
+// It is asked only of those three.
+fn unit_per_sec(u: Int) -> Int
+    match u
+        0 => 1000000000
+        1 => 1000000
+        _ => 1000
+
+// One of the unit as a length.
+fn unit_length(u: Int) -> HtDuration
+    if u < 3
+        htdur.new(0, 1000000000 / unit_per_sec(u))
+    else
+        htdur.from_secs(unit_secs(u))
 
 // ── Text into a length ──────────────────────────────────────────────
 
-// The duration `s` spells, as the seconds and nanoseconds `htdur.new`
-// takes.
+// The byte at `i`, or -1 past the end.
+fn at(s: Str, i: Int) -> Int
+    str.byte_at_or(s, i, -1)
+
+// Whether a byte is an ASCII digit.
+fn is_digit(b: Int) -> Bool
+    b >= '0' and b <= '9'
+
+// Whether a byte is a space or a tab.
+fn is_space(b: Int) -> Bool
+    b == ' ' or b == '\t'
+
+// Whether a byte can be part of a unit's spelling: an ASCII letter, or
+// either byte of `µ` in UTF-8 (0xC2 0xB5).
+fn is_unit_byte(b: Int) -> Bool
+    b >= 'a' and b <= 'z' or b >= 'A' and b <= 'Z' or b == 194 or b == 181
+
+// The offset of the first byte at or after `i` that is not space.
+fn skip_space(s: Str, i: Int) -> Int
+    var j = i
+    while is_space(at(s, j))
+        j = j + 1
+    j
+
+// The offset of the first byte at or after `i` that is not a digit.
+fn end_of_digits(s: Str, i: Int) -> Int
+    var j = i
+    while is_digit(at(s, j))
+        j = j + 1
+    j
+
+// The offset of the first byte at or after `i` that cannot be part of
+// a unit.
+fn end_of_unit(s: Str, i: Int) -> Int
+    var j = i
+    while is_unit_byte(at(s, j))
+        j = j + 1
+    j
+
+// The integer part of a term, `s[i..j)`, or -1 when it does not fit an
+// `Int`.
+fn integer_value(s: Str, i: Int, j: Int) -> Int
+    var n = 0
+    for k in i..j
+        let next = math.checked_mul(n, 10) ?? -1
+        if next < 0
+            return -1
+        n = math.checked_add(next, at(s, k) - '0') ?? -1
+        if n < 0
+            return -1
+    n
+
+// The fractional digits `s[i..j)` as a numerator over 10^k, keeping at
+// most nine digits: `(numerator, k)`.
+fn fraction_value(s: Str, i: Int, j: Int) -> (Int, Int)
+    let stop = if j - i > 9
+        i + 9
+    else
+        j
+    var n = 0
+    var scale = 1
+    for k in i..stop
+        n = n * 10 + at(s, k) - '0'
+        scale = scale * 10
+    (n, scale)
+
+// `whole` and `frac / scale` of unit `u`, as a length, or `None` past
+// `htdur.max_value`.
+fn term_length(whole: Int, frac: Int, scale: Int, u: Int) -> ?HtDuration
+    let secs = unit_secs(u)
+    if secs == 0
+        let per = unit_per_sec(u)
+        let ns_each = 1000000000 / per
+        let whole_part = htdur.new(whole / per, whole % per * ns_each)
+        return Some(htdur.new(whole_part.secs, whole_part.nanos + frac * ns_each / scale))
+    let whole_secs = math.checked_mul(whole, secs) ?? -1
+    if whole_secs < 0
+        return None
+    let f = frac * secs
+    let frac_secs = f / scale
+    let frac_nanos = f % scale * (1000000000 / scale)
+    match math.checked_add(whole_secs, frac_secs)
+        Some(total) => Some(htdur.new(total, frac_nanos))
+        None        => None
+
+// `a + b`, or `None` past `htdur.max_value`.
+fn checked_add(a: HtDuration, b: HtDuration) -> ?HtDuration
+    let n = a.nanos + b.nanos
+    let s = math.checked_add(a.secs, b.secs) ?? -1
+    if s < 0
+        return None
+    match math.checked_add(s, n / 1000000000)
+        Some(total) => Some(htdur.new(total, n % 1000000000))
+        None        => None
+
+// `total` with `term` added, or `None` when either is past
+// `htdur.max_value`.
+fn grown(total: HtDuration, term: ?HtDuration) -> ?HtDuration
+    match term
+        Some(t) => checked_add(total, t)
+        None    => None
+
+// The grammar, with `whole_secs` set when nothing below a second may
+// appear: no decimal point and no unit smaller than a second.
+fn parse_with(s: Str, whole_secs: Bool) -> Result<HtDuration, HtError>
+    let n = str.len(s)
+    var i = skip_space(s, 0)
+    if i >= n
+        return Err(HtEmptyInput)
+    var total = htdur.zero()
+    while at(s, i) >= 0
+        let b = at(s, i)
+        if not is_digit(b)
+            if is_unit_byte(b)
+                return Err(HtUnitWithoutNumber(i))
+            return Err(HtBadCharacter(i, b))
+        let start = i
+        let int_end = end_of_digits(s, i)
+        let whole = integer_value(s, i, int_end)
+        if whole < 0
+            return Err(HtOverflow(start))
+        i = int_end
+        var frac = 0
+        var scale = 1
+        if at(s, i) == '.'
+            if whole_secs or not is_digit(at(s, i + 1))
+                return Err(HtBadCharacter(i, '.'))
+            let frac_end = end_of_digits(s, i + 1)
+            let (f, sc) = fraction_value(s, i + 1, frac_end)
+            frac = f
+            scale = sc
+            i = frac_end
+        i = skip_space(s, i)
+        let unit_end = end_of_unit(s, i)
+        if unit_end == i
+            if i >= n or is_digit(at(s, i))
+                return Err(HtNumberWithoutUnit(start))
+            return Err(HtBadCharacter(i, at(s, i)))
+        let spelling = str.slice(s, i, unit_end)
+        let u = unit_of(spelling)
+        if u < 0
+            return Err(HtUnknownUnit(i, spelling))
+        if whole_secs and u < 3
+            return Err(HtBadCharacter(i, at(s, i)))
+        match grown(total, term_length(whole, frac, scale, u))
+            Some(next) =>
+                total = next
+            None       =>
+                return Err(HtOverflow(start))
+        i = skip_space(s, unit_end)
+    Ok(total)
+
+// The duration `s` spells.
 //
-// Terms are added, so `"1h 1h"` is two hours — the grammar does not
-// require a unit to appear once, and refusing a repeat would refuse
-// `"1h 30m 30s"` written as `"1h 30m 30s"` with a comment between the
-// terms, which is a thing configuration files do.
+// Terms are added, so `"1h 1h"` is two hours.  The grammar does not
+// require a unit to appear once.  A total longer than `htdur.max_value`
+// is `HtOverflow`.
 //
 // ```novo
-// use htdur
 // use humantime
 //
 // fn main() [io]
 //     match humantime.parse_duration("2h 30m")
-//         Ok((secs, nanos)) => println("${htdur.new(secs, nanos).secs}")   // 9000
-//         Err(e)            => println(e.message())
+//         Ok(d)  => println("${d.secs}")   // 9000
+//         Err(e) => println(e.message())
 // ```
-pub fn parse_duration(s: Str) -> Result<(Int, Int), HtError>
-    todo("humantime.parse_duration")
+pub fn parse_duration(s: Str) -> Result<HtDuration, HtError>
+    parse_with(s, false)
 
 // The duration `s` spells, in whole seconds, with anything below a
 // second refused.
 //
-// The call a configuration reader wants when the consumer is a
-// second-resolution API — a cron-like schedule, an HTTP `max-age`, a
-// TTL — because a value that says `"500ms"` there is a value somebody
-// will be surprised by.  `HtBadCharacter` at the offset of the decimal
-// point or the sub-second unit.
+// The call a configuration reader wants when the consumer works in
+// seconds: a schedule, an HTTP `max-age`, a TTL.  A value that says
+// `"500ms"` there is one somebody would be surprised by.  The refusal
+// is `HtBadCharacter` at the offset of the decimal point or of the
+// sub-second unit.
+//
+// ```novo
+// use humantime
+//
+// fn main() [io]
+//     match humantime.parse_duration_secs("250ms")
+//         Ok(secs) => println("${secs}")
+//         Err(e)   => println(e.message())   // unexpected character 'm' at offset 3
+// ```
 pub fn parse_duration_secs(s: Str) -> Result<Int, HtError>
-    todo("humantime.parse_duration_secs")
+    let d = parse_with(s, true)!
+    Ok(d.secs)
 
 // True when `s` is a duration this grammar accepts.
 //
-// For a validator that wants a yes or no without building the error —
-// a form field, a completion candidate, a linter.
+// For a validator that wants a yes or no without building the error: a
+// form field, a completion candidate, a linter.
 pub fn is_duration(s: Str) -> Bool
-    todo("humantime.is_duration")
+    match parse_with(s, false)
+        Ok(_)  => true
+        Err(_) => false
 
 // ── A length into text ──────────────────────────────────────────────
 
-// The shortest spelling that means EXACTLY this length.
+// The spelling of `n` of unit `u` in the exact formatter: humantime's
+// word with a plural for a year, a month and a day, and the short
+// symbol for the rest.
+fn exact_term(n: Int, u: Int) -> Str
+    match u
+        9 => plural_word(n, "year")
+        8 => plural_word(n, "month")
+        6 => plural_word(n, "day")
+        5 => "${n}h"
+        4 => "${n}m"
+        3 => "${n}s"
+        2 => "${n}ms"
+        1 => "${n}us"
+        _ => "${n}ns"
+
+// `n` and a word with no space between, plural unless `n` is one.
+fn plural_word(n: Int, word: Str) -> Str
+    if n == 1
+        "${n}${word}"
+    else
+        "${n}${word}s"
+
+// The units the exact formatter writes, largest first.  A week is not
+// one of them, as in humantime: seven days print as `7days`.
+fn exact_units() -> [Int]
+    [9, 8, 6, 5, 4, 3, 2, 1, 0]
+
+// How many of unit `u` the remainder `(secs, nanos)` holds, with the
+// remainder after them.
+fn take_unit(secs: Int, nanos: Int, u: Int) -> (Int, Int, Int)
+    let each = unit_secs(u)
+    if each > 0
+        (secs / each, secs % each, nanos)
+    else
+        let per = 1000000000 / unit_per_sec(u)
+        (nanos / per, secs, nanos % per)
+
+// The terms of `d` from the largest unit down to unit `smallest`,
+// joined by spaces, or `"0"` and that unit when every term is zero.
+fn spell_down_to(d: HtDuration, smallest: Int) -> Str
+    var parts: [Str] = []
+    var secs = d.secs
+    var nanos = d.nanos
+    for u in exact_units()
+        if u < smallest
+            break
+        let (count, rest_secs, rest_nanos) = take_unit(secs, nanos, u)
+        if count > 0
+            list.push(parts, exact_term(count, u))
+        secs = rest_secs
+        nanos = rest_nanos
+    if list.len(parts) == 0
+        return exact_term(0, smallest)
+    str.join(parts, " ")
+
+// The shortest spelling that means exactly this length.
 //
-// Largest unit first, one term per unit that has a non-zero
-// coefficient, space-separated: `9000` seconds is `"2h 30m"`,
-// `1500000000` nanoseconds is `"1s 500ms"`, and zero is `"0s"` rather
-// than an empty string, because an empty string in a log says nothing.
+// Largest unit first, one term per unit with a non-zero count, joined by
+// spaces: 9000 seconds is `"2h 30m"`, 1500000000 nanoseconds is
+// `"1s 500ms"`, and zero is `"0s"`, because an empty string in a log says
+// nothing.  Years, months and days are words with a plural, as in
+// humantime: `"1year 2months 3days"`.
 //
-// Exact, so it round-trips: `parse_duration(format_duration(d))` is `d`
-// for every `d`, and `tests/humantime_tests.nv` asserts it on the
-// awkward ones.  Years and months are used, so a length that happens to
-// be 31557600 seconds comes back as `"1year"` — which is what makes the
-// round trip exact rather than merely close.
+// `parse_duration(format_duration(d))` is `d` for every `d`.  Years and
+// months are used, so a length of 31557600 seconds comes back as
+// `"1year"`, and the round trip is exact.
 //
 // ```novo
 // use htdur
@@ -158,34 +453,100 @@ pub fn is_duration(s: Str) -> Bool
 //     println(humantime.format_duration(htdur.from_secs(9000)))   // 2h 30m
 // ```
 pub fn format_duration(d: HtDuration) -> Str
-    todo("humantime.format_duration")
+    if htdur.is_zero(d)
+        return "0s"
+    spell_down_to(d, 0)
 
 // The same spelling, with the terms below `floor` dropped.
 //
-// `format_duration` of a measured elapsed time is `"2h 30m 4s 112ms
-// 918us 41ns"`, which nobody reads.  This one takes the smallest unit
-// worth printing — `htdur.from_secs(1)` for a log line, and
-// `htdur.from_millis(1)` for a benchmark — and stops there, truncating
-// rather than rounding so the answer never overstates the length.
+// The exact spelling of a measured elapsed time is
+// `"2h 30m 4s 112ms 918us 41ns"`, which nobody reads.  This one stops
+// at the largest unit of the exact formatter no longer than `floor`:
+// `htdur.from_secs(1)` for a log line, `htdur.from_millis(1)` for a
+// benchmark.  The terms after it are dropped rather than rounded, so the
+// answer never overstates the length.  A `floor` of zero keeps every
+// term.
 //
-// A length shorter than `floor` prints as `"0s"` in the floor's unit,
-// not as nothing.
+// A length shorter than that unit prints as zero of it, `"0s"` for a
+// floor of a second, not as nothing.
+//
+// ```novo
+// use htdur
+// use humantime
+//
+// fn main() [io]
+//     let d = htdur.new(9004, 112918041)
+//     println(humantime.format_duration_from(d, htdur.from_secs(1)))   // 2h 30m 4s
+// ```
 pub fn format_duration_from(d: HtDuration, floor: HtDuration) -> Str
-    todo("humantime.format_duration_from")
+    var smallest = 0
+    for u in exact_units()
+        if htdur.compare(unit_length(u), floor) <= 0
+            smallest = u
+            break
+    spell_down_to(d, smallest)
+
+// The units a person names, largest first: the exact formatter's, with
+// the week between the month and the day.
+fn spoken_units() -> [Int]
+    [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+
+// The singular noun for a unit.
+fn noun(u: Int) -> Str
+    match u
+        9 => "year"
+        8 => "month"
+        7 => "week"
+        6 => "day"
+        5 => "hour"
+        4 => "minute"
+        3 => "second"
+        2 => "millisecond"
+        1 => "microsecond"
+        _ => "nanosecond"
+
+// The largest spoken unit `d` is at least one of, or the nanosecond
+// for a length shorter than any.
+fn largest_unit(d: HtDuration) -> Int
+    var found = 0
+    for u in spoken_units()
+        if htdur.compare(d, unit_length(u)) >= 0
+            found = u
+            break
+    found
+
+// The noun for `n` of unit `u`, plural unless `n` is one.
+fn agreeing_noun(n: Int, u: Int) -> Str
+    if n == 1
+        noun(u)
+    else
+        "${noun(u)}s"
+
+// `d` in units of `u`, a unit of a second or more, rounded to the
+// nearest whole count.  A length exactly halfway rounds down.
+fn rounded_count(d: HtDuration, u: Int) -> Int
+    let each = unit_secs(u)
+    let count = d.secs / each
+    let rest = d.secs % each
+    if rest * 2 > each or rest * 2 == each and d.nanos > 0
+        count + 1
+    else
+        count
 
 // The length as a person would say it: `"about 2 hours"`.
 //
-// ONE term, rounded, with a word in front of it that says how much was
-// rounded away.  `"2 hours"` when the length is a whole number of
-// hours, `"about 2 hours"` when it is not, `"just now"` for anything
-// under a second, `"1 second"` and `"2 seconds"` with the plural
-// agreeing.
+// One term, rounded to the nearest whole count of the largest unit it
+// reaches, with a length exactly halfway rounded down.  `"2 hours"` when
+// the length is a whole number of hours, `"about 2 hours"` when it is
+// not, and `"just now"` for anything under a second.  The noun agrees
+// with the count: `"1 second"`, `"2 seconds"`.  A count that rounds up
+// into the next unit is said in that unit, so 3599 seconds is
+// `"about 1 hour"`.
 //
-// This is NOT humantime's exact formatter under another name, and it
-// does not round-trip: `parse_duration(format_approx(d))` is refused,
-// because `"about"` and `"just now"` are not in the grammar.  It is for
-// the place a person reads — a status line, a progress report, a
-// `last seen` column — and `format_duration` is for everywhere else.
+// This does not round-trip: `parse_duration(format_approx(d))` is
+// refused, because `"about"` and `"just now"` are not in the grammar.
+// It is for the place a person reads, such as a status line or a `last
+// seen` column, and `format_duration` is for everywhere else.
 //
 // ```novo
 // use htdur
@@ -196,13 +557,35 @@ pub fn format_duration_from(d: HtDuration, floor: HtDuration) -> Str
 //     println(humantime.format_approx(htdur.from_secs(7200)))   // 2 hours
 // ```
 pub fn format_approx(d: HtDuration) -> Str
-    todo("humantime.format_approx")
+    if d.secs == 0
+        return "just now"
+    let first = largest_unit(d)
+    let first_count = rounded_count(d, first)
+    let rounded = htdur.mul_int(unit_length(first), first_count)
+    let u = largest_unit(rounded)
+    let count = rounded_count(d, u)
+    let exact = htdur.compare(htdur.mul_int(unit_length(u), count), d) == 0
+    let words = "${count} ${agreeing_noun(count, u)}"
+    if exact
+        words
+    else
+        "about ${words}"
 
-// The name of the largest unit `d` reaches, singular or plural to
-// agree with `d`: `"hours"`, `"month"`, `"nanoseconds"`.
+// The name of the largest unit `d` reaches, singular or plural to agree
+// with the whole count of it: `"hours"`, `"month"`, `"nanoseconds"`.
 //
-// What `format_approx` is built from, exposed because a caller
-// arranging its own sentence wants the noun without the number in front
-// of it.
+// The noun `format_approx` is built from, for a caller arranging its
+// own sentence.  The count it agrees with is truncated, so 5400 seconds
+// is `"hour"`.  Zero is `"nanoseconds"`.
+//
+// ```novo
+// use htdur
+// use humantime
+//
+// fn main() [io]
+//     println(humantime.largest_unit_name(htdur.from_secs(7200)))   // hours
+// ```
 pub fn largest_unit_name(d: HtDuration) -> Str
-    todo("humantime.largest_unit_name")
+    let u = largest_unit(d)
+    let (count, _s, _n) = take_unit(d.secs, d.nanos, u)
+    agreeing_noun(count, u)

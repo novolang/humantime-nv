@@ -1,58 +1,56 @@
 // htdur — the length of time humantime's grammar spells, as arithmetic
-// that allocates nothing.
+// over two integers.
 //
-// Every body is a `todo()`.  The signatures are the design, and the
-// compiler checks them as claims; see the README for the stamp.
+// This module speaks `Int` and nothing else.  `humantime` and `htstamp`
+// speak `Str` and calendar-nv's civil types.  A caller holds an
+// `HtDuration` between the parse and the use: a configuration file said
+// `"30s"`, the program holds thirty seconds, and holding it needs none
+// of the text half.
 //
-// WHY THERE IS A SEPARATE MODULE FOR A PAIR OF INTEGERS.  `humantime`
-// and `htstamp` speak `Str` and calendar-nv's civil types.  This one
-// speaks `Int`, and it is what a caller holds BETWEEN the parse and the
-// use: a configuration file said `"30s"`, the program holds thirty
-// seconds, and nothing about holding it should require the text half.
+// The length is never negative.  `"2h 30m"` has no sign in it, and
+// humantime parses into Rust's `std::time::Duration`, which is unsigned.
+// Every consumer of the type is a length rather than a difference: a
+// timeout, a retry backoff, a cache lifetime, an uptime.  A caller who
+// needs a signed difference wants calendar-nv's `TimeDelta`, and
+// `htstamp.to_time_delta` is the call that crosses.
 //
-// THE DURATION IS NOT NEGATIVE, and that is the grammar rather than a
-// simplification.  `"2h 30m"` has no sign in it; humantime parses into
-// Rust's `std::time::Duration`, which is unsigned; and every consumer —
-// a timeout, a retry backoff, a cache lifetime, an uptime — is a length
-// and not a difference.  A caller who needs a signed difference wants
-// calendar-nv's `TimeDelta`, and `htstamp.to_time_delta` is the one
-// call that crosses.
+// `nanos` is always in `0 ..= 999_999_999` and `secs` is never
+// negative.  Every constructor and every operation keeps that true, so
+// a caller may read the two fields directly.
 //
-// THE INVARIANT.  `nanos` is `0 ..= 999_999_999` and `secs` is not
-// negative, always: every constructor and every operation normalises,
-// so a caller may read the two fields directly.
-//
-// WHAT A YEAR AND A MONTH MEAN HERE.  humantime's grammar has `1y` and
-// `1month`, and they are FIXED lengths — a year is 365.25 days and a
-// month is a twelfth of that, 30.4375 days.  They are not calendar
-// arithmetic: adding `1month` to the 31st of January does not give the
-// 28th of February, it gives 30.4375 days later.  That is the right
-// answer for "expire this cache entry in a month" and the wrong answer
-// for "bill this customer next month", and the second one is
-// calendar-nv's `arith.add_months`.  The README has the table.
+// A year and a month are fixed lengths.  A year is 365.25 days and a
+// month is a twelfth of that, 30.4375 days, as in humantime.  They are
+// not calendar arithmetic: adding one month to the 31st of January lands
+// 30.4375 days later, not on the 28th of February.  That is the right
+// answer for "expire this cache entry in a month".  For "bill this
+// customer next month" the answer is calendar-nv's `arith.add_months`.
+
+use std.math
 
 // A length of time, exact to the nanosecond and never negative.
 //
 // A `@value` struct, so it lives in the caller's stack frame with no
-// header, no reference count and no allocation — a retry policy that
-// keeps four of these keeps sixty-four bytes.
+// header, no reference count and no allocation.
 pub @value
 struct HtDuration
     // Whole seconds, never negative.
     secs: Int
-    // `0 ..= 999_999_999`.  Nanoseconds and not a `Float`, because 52
-    // bits of mantissa resolves to about a fifth of a microsecond
-    // around a day's length, and a duration that does not round-trip
-    // through its own formatter is not a duration.
+    // `0 ..= 999_999_999`.  Nanoseconds rather than a `Float`: 52 bits
+    // of mantissa resolve to about a fifth of a microsecond around a
+    // day's length, and the exact formatter has to round-trip.
     nanos: Int
+
+// The nanoseconds in one second.
+fn nanos_per_sec() -> Int
+    1000000000
 
 // A length of `secs` seconds and `nanos` nanoseconds, normalised.
 //
 // Nanoseconds past a whole second are carried into `secs`, so
 // `new(1, 1_500_000_000)` is two and a half seconds.  A negative `secs`
 // or a negative `nanos` answers zero, because the type has no negative
-// values and a caller who computed one has a bug that a clamp makes
-// visible sooner than a wrap.
+// values.  A carry that would pass the largest `Int` answers
+// `max_value`.
 //
 // ```novo
 // use htdur
@@ -62,30 +60,50 @@ struct HtDuration
 //     println("${d.secs} ${d.nanos}")   // 2 500000000
 // ```
 pub fn new(secs: Int, nanos: Int) -> HtDuration
-    todo("htdur.new")
+    if secs < 0 or nanos < 0
+        return zero()
+    let carry = nanos / nanos_per_sec()
+    match math.checked_add(secs, carry)
+        Some(s) => HtDuration { secs: s, nanos: nanos % nanos_per_sec() }
+        None    => max_value()
 
 // Nothing at all.
 pub fn zero() -> HtDuration
-    todo("htdur.zero")
+    HtDuration { secs: 0, nanos: 0 }
 
 // The longest length this type holds: `secs` at the largest `Int` and
 // `nanos` at 999999999.
 //
-// What a saturating addition lands on, and what `"forever"` is not —
-// the grammar has no such word, and a caller who wants one wants an
-// optional.
+// A saturating operation lands here.  The grammar has no word for
+// "forever", and a caller who wants one wants an optional around the
+// length rather than this value.
 pub fn max_value() -> HtDuration
-    todo("htdur.max_value")
+    HtDuration { secs: math.max_int(), nanos: 999999999 }
 
-// ── Construction, one per unit of the grammar ───────────────────────
+// `n` whole units of `unit_secs` seconds each: zero for a negative `n`,
+// and `max_value` past the largest `Int`.
+fn of_secs(n: Int, unit_secs: Int) -> HtDuration
+    if n < 0
+        return zero()
+    match math.checked_mul(n, unit_secs)
+        Some(s) => HtDuration { secs: s, nanos: 0 }
+        None    => max_value()
 
-// `n` nanoseconds.
+// `n` units of which `per_sec` make a second, or zero for a negative
+// `n`.
+fn of_fraction(n: Int, per_sec: Int) -> HtDuration
+    if n < 0
+        return zero()
+    HtDuration { secs: n / per_sec, nanos: n % per_sec * (nanos_per_sec() / per_sec) }
+
+// `n` nanoseconds.  A negative `n` answers zero, as it does for every
+// constructor below.
 pub fn from_nanos(n: Int) -> HtDuration
-    todo("htdur.from_nanos")
+    of_fraction(n, 1000000000)
 
 // `n` microseconds.
 pub fn from_micros(n: Int) -> HtDuration
-    todo("htdur.from_micros")
+    of_fraction(n, 1000000)
 
 // `n` milliseconds.
 //
@@ -97,67 +115,68 @@ pub fn from_micros(n: Int) -> HtDuration
 //     println("${d.secs} ${d.nanos}")   // 1 500000000
 // ```
 pub fn from_millis(n: Int) -> HtDuration
-    todo("htdur.from_millis")
+    of_fraction(n, 1000)
 
 // `n` seconds.
 pub fn from_secs(n: Int) -> HtDuration
-    todo("htdur.from_secs")
+    of_secs(n, 1)
 
-// `n` minutes — 60 seconds each.
+// `n` minutes, 60 seconds each.
+//
+// This constructor and the five after it answer `max_value` when the
+// product passes the largest `Int`.
 pub fn from_minutes(n: Int) -> HtDuration
-    todo("htdur.from_minutes")
+    of_secs(n, minute_secs())
 
-// `n` hours — 3600 seconds each.
+// `n` hours, 3600 seconds each.
 pub fn from_hours(n: Int) -> HtDuration
-    todo("htdur.from_hours")
+    of_secs(n, hour_secs())
 
-// `n` days — 86400 seconds each.
+// `n` days, 86400 seconds each.
 //
 // A day here is exactly 86400 seconds.  A civil day that crosses a
 // daylight-saving boundary is 23 or 25 hours long, and this type does
-// not know about it — that is a zoned calculation, and calendar-nv plus
-// tz-nv are where it lives.
+// not know it.  That is a calculation in a time zone, made with
+// calendar-nv and tz-nv.
 pub fn from_days(n: Int) -> HtDuration
-    todo("htdur.from_days")
+    of_secs(n, day_secs())
 
-// `n` weeks — 7 days each.
+// `n` weeks, 7 days each.
 pub fn from_weeks(n: Int) -> HtDuration
-    todo("htdur.from_weeks")
+    of_secs(n, week_secs())
 
-// `n` months — 2630016 seconds each, which is 30.4375 days.
+// `n` months, 2630016 seconds each, which is 30.4375 days.
 //
-// A twelfth of a Julian year, and NOT the calendar month the date
-// happens to be in.  See the module note.
+// A twelfth of a Julian year, not the calendar month a date happens to
+// be in.  The module comment says which call a calendar month wants.
 pub fn from_months(n: Int) -> HtDuration
-    todo("htdur.from_months")
+    of_secs(n, month_secs())
 
-// `n` years — 31557600 seconds each, which is 365.25 days.
+// `n` years, 31557600 seconds each, which is 365.25 days.
 //
-// The Julian year, which is what humantime's `1y` is.  Not the
-// Gregorian mean year of 365.2425 days, and not the calendar year the
-// date happens to be in.
+// The Julian year, which is what humantime's `1y` is.  It is not the
+// Gregorian mean year of 365.2425 days, and not the calendar year a date
+// happens to be in.
 pub fn from_years(n: Int) -> HtDuration
-    todo("htdur.from_years")
-
-// ── The unit lengths, so the grammar's definitions are readable ─────
+    of_secs(n, year_secs())
 
 // 60.
 pub fn minute_secs() -> Int
-    todo("htdur.minute_secs")
+    60
 
 // 3600.
 pub fn hour_secs() -> Int
-    todo("htdur.hour_secs")
+    3600
 
 // 86400.
 pub fn day_secs() -> Int
-    todo("htdur.day_secs")
+    86400
 
 // 604800.
 pub fn week_secs() -> Int
-    todo("htdur.week_secs")
+    604800
 
-// 2630016 — 30.4375 days, a twelfth of a Julian year.
+// 2630016: 30.4375 days, a twelfth of a Julian year.
 //
 // ```novo
 // use htdur
@@ -166,26 +185,33 @@ pub fn week_secs() -> Int
 //     println("${htdur.month_secs()}")   // 2630016
 // ```
 pub fn month_secs() -> Int
-    todo("htdur.month_secs")
+    2630016
 
-// 31557600 — 365.25 days, the Julian year.
+// 31557600: 365.25 days, the Julian year.
 pub fn year_secs() -> Int
-    todo("htdur.year_secs")
-
-// ── Reading it back ─────────────────────────────────────────────────
+    31557600
 
 // The whole seconds.
 pub fn as_secs(d: HtDuration) -> Int
-    todo("htdur.as_secs")
+    d.secs
 
 // The nanoseconds past the last whole second, `0 ..= 999_999_999`.
 pub fn subsec_nanos(d: HtDuration) -> Int
-    todo("htdur.subsec_nanos")
+    d.nanos
+
+// The whole length in units of which `per_sec` make a second,
+// truncated, and the largest `Int` when it does not fit.
+fn as_fraction(d: HtDuration, per_sec: Int) -> Int
+    let part = d.nanos / (nanos_per_sec() / per_sec)
+    match math.checked_mul(d.secs, per_sec)
+        Some(whole) => math.checked_add(whole, part) ?? math.max_int()
+        None        => math.max_int()
 
 // The whole length in milliseconds, truncated.
 //
 // Truncated rather than rounded, because the consumers are timeouts and
-// a timeout that rounded up would fire late.
+// a timeout that rounded up would fire late.  A length of more
+// milliseconds than an `Int` holds answers the largest `Int`.
 //
 // ```novo
 // use htdur
@@ -194,37 +220,47 @@ pub fn subsec_nanos(d: HtDuration) -> Int
 //     println("${htdur.as_millis(htdur.from_millis(1500))}")   // 1500
 // ```
 pub fn as_millis(d: HtDuration) -> Int
-    todo("htdur.as_millis")
+    as_fraction(d, 1000)
 
-// The whole length in microseconds, truncated.
+// The whole length in microseconds, truncated, and the largest `Int`
+// past it.
 pub fn as_micros(d: HtDuration) -> Int
-    todo("htdur.as_micros")
+    as_fraction(d, 1000000)
 
-// The whole length in nanoseconds, truncated.
+// The whole length in nanoseconds.
 //
 // An `Int` is 64 bits, so this saturates past about 292 years rather
-// than wrapping — a length that long is a configuration mistake and a
-// saturated answer is the one a caller can notice.
+// than wrapping.  A length that long is a configuration mistake, and a
+// saturated answer is one a caller can notice.
 pub fn as_nanos(d: HtDuration) -> Int
-    todo("htdur.as_nanos")
+    as_fraction(d, 1000000000)
 
 // True when the length is zero.
 pub fn is_zero(d: HtDuration) -> Bool
-    todo("htdur.is_zero")
+    d.secs == 0 and d.nanos == 0
 
-// ── Arithmetic ──────────────────────────────────────────────────────
-
-// `a + b`.  Traps on overflow.
+// `a + b`.  Traps on overflow, as `Int` addition does (SPEC § 13.2).
 pub fn add(a: HtDuration, b: HtDuration) -> HtDuration
-    todo("htdur.add")
+    let n = a.nanos + b.nanos
+    let carry = n / nanos_per_sec()
+    HtDuration { secs: a.secs + b.secs + carry, nanos: n % nanos_per_sec() }
 
 // `a - b`.  Traps when `b` is longer than `a`.
 //
-// The trap is the type earning its place: a retry budget that went
-// negative is a budget that was already spent, and a signed type would
-// have carried the negative forward into the next sleep.
+// A retry budget that went negative is a budget already spent.  A
+// signed type would carry the negative into the next sleep, and the
+// trap stops it at the subtraction instead.
 pub fn sub(a: HtDuration, b: HtDuration) -> HtDuration
-    todo("htdur.sub")
+    if compare(a, b) < 0
+        panic.panic("htdur.sub: the right side is longer than the left")
+    sub_ordered(a, b)
+
+// `a - b` for an `a` at least as long as `b`.
+fn sub_ordered(a: HtDuration, b: HtDuration) -> HtDuration
+    if a.nanos >= b.nanos
+        HtDuration { secs: a.secs - b.secs, nanos: a.nanos - b.nanos }
+    else
+        HtDuration { secs: a.secs - b.secs - 1, nanos: a.nanos + nanos_per_sec() - b.nanos }
 
 // `a - b`, clamped to zero.
 //
@@ -239,39 +275,108 @@ pub fn sub(a: HtDuration, b: HtDuration) -> HtDuration
 //     println("${left.secs}")   // 0
 // ```
 pub fn sat_sub(a: HtDuration, b: HtDuration) -> HtDuration
-    todo("htdur.sat_sub")
+    if compare(a, b) < 0
+        zero()
+    else
+        sub_ordered(a, b)
 
 // `a + b`, clamped to `max_value`.
 pub fn sat_add(a: HtDuration, b: HtDuration) -> HtDuration
-    todo("htdur.sat_add")
+    let n = a.nanos + b.nanos
+    let carry = n / nanos_per_sec()
+    let s = math.checked_add(a.secs, b.secs) ?? -1
+    if s < 0
+        return max_value()
+    match math.checked_add(s, carry)
+        Some(total) => HtDuration { secs: total, nanos: n % nanos_per_sec() }
+        None        => max_value()
 
 // `d` multiplied by the whole number `n`.
 //
-// What an exponential backoff is: the previous delay times two, every
-// time.  A negative `n` answers zero.
+// An exponential backoff is this call with an `n` of two, every time.
+// A negative `n` answers zero.  A product longer than `max_value`
+// answers `max_value`, so a backoff that has run long stops growing
+// rather than stopping the program.
 pub fn mul_int(d: HtDuration, n: Int) -> HtDuration
-    todo("htdur.mul_int")
+    if n <= 0
+        return zero()
+    let whole = math.checked_mul(d.secs, n) ?? -1
+    let ns = math.checked_mul(d.nanos, n) ?? -1
+    if whole < 0 or ns < 0
+        return max_value()
+    match math.checked_add(whole, ns / nanos_per_sec())
+        Some(s) => HtDuration { secs: s, nanos: ns % nanos_per_sec() }
+        None    => max_value()
+
+// `(a + b) mod n`, and 1 when the sum reached `n`, for `a` and `b`
+// below `n`.  No intermediate value passes `n`.
+fn add_mod(a: Int, b: Int, n: Int) -> (Int, Int)
+    if a >= n - b
+        (a - (n - b), 1)
+    else
+        (a + b, 0)
+
+// `floor((r * 10^9 + nanos) / n)` for a positive `n` and an `r` below
+// `n`.
+//
+// The product can pass 64 bits, so it is formed one bit of 10^9 at a
+// time, with the remainder kept below `n` and the quotient built beside
+// it.  This is binary long division.
+fn div_nanos(r: Int, nanos: Int, n: Int) -> Int
+    var q = 0
+    var rem = 0
+    var bit = 536870912   // 2^29, the highest bit set in 10^9
+    while bit > 0
+        let (doubled, c1) = add_mod(rem, rem, n)
+        q = q * 2 + c1
+        rem = doubled
+        if nanos_per_sec() / bit % 2 == 1
+            let (sum, c2) = add_mod(rem, r, n)
+            q = q + c2
+            rem = sum
+        bit = bit / 2
+    let (_last, c3) = add_mod(rem, nanos % n, n)
+    q + c3 + nanos / n
 
 // `d` divided by the whole number `n`, truncated.
 //
-// An `n` of zero answers `max_value`, for the reason `div` does
-// everywhere in this project: a caller dividing by a count that turned
-// out to be empty wants a number it can see, not a stopped program.
+// An `n` of zero answers `max_value`: a caller dividing by a count that
+// turned out to be empty gets a number it can see rather than a stopped
+// program.  A negative `n` answers zero, as it does for `mul_int`.
 pub fn div_int(d: HtDuration, n: Int) -> HtDuration
-    todo("htdur.div_int")
+    if n == 0
+        return max_value()
+    if n < 0
+        return zero()
+    HtDuration { secs: d.secs / n, nanos: div_nanos(d.secs % n, d.nanos, n) }
 
 // -1 when `a` is shorter than `b`, 0 when they are the same length,
 // 1 when `a` is longer.
 pub fn compare(a: HtDuration, b: HtDuration) -> Int
-    todo("htdur.compare")
+    if a.secs < b.secs
+        -1
+    else if a.secs > b.secs
+        1
+    else if a.nanos < b.nanos
+        -1
+    else if a.nanos > b.nanos
+        1
+    else
+        0
 
 // The shorter of the two.
 //
-// Named functions rather than a general `min` over a comparator,
+// Two named functions rather than a general `min` over a comparator,
 // because the two calls a deadline makes are exactly this and `max`.
 pub fn min(a: HtDuration, b: HtDuration) -> HtDuration
-    todo("htdur.min")
+    if compare(a, b) <= 0
+        a
+    else
+        b
 
 // The longer of the two.
 pub fn max(a: HtDuration, b: HtDuration) -> HtDuration
-    todo("htdur.max")
+    if compare(a, b) >= 0
+        a
+    else
+        b

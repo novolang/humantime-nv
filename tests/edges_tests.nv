@@ -1,0 +1,122 @@
+// tests/edges_tests.nv — the ends of the ranges: the arithmetic at the
+// largest `Int`, the negative arguments every constructor answers zero
+// for, and the terms that pass the longest length.
+
+use std.test
+use std.math
+use htdur
+use humantime
+use htstamp
+
+@test
+fn test_the_constructors_clamp_rather_than_wrap()
+    test.assert_eq(htdur.compare(htdur.new(math.max_int(), 1000000000), htdur.max_value()), 0)
+    test.assert_eq(htdur.is_zero(htdur.from_secs(-1)), true)
+    test.assert_eq(htdur.is_zero(htdur.from_nanos(-1)), true)
+    test.assert_eq(htdur.compare(htdur.from_minutes(math.max_int()), htdur.max_value()), 0)
+    test.assert_eq(htdur.compare(htdur.from_years(292271023046), htdur.max_value()), 0)
+    test.assert_eq(htdur.from_years(292271023045).secs, 9223372036844892000)
+
+@test
+fn test_the_readers_saturate_at_the_largest_int()
+    test.assert_eq(htdur.as_millis(htdur.new(9223372036854775, 999000000)), math.max_int())
+    test.assert_eq(htdur.as_millis(htdur.new(9223372036854775, 807000000)), math.max_int())
+    test.assert_eq(htdur.as_micros(htdur.max_value()), math.max_int())
+    test.assert_eq(htdur.as_nanos(htdur.from_years(293)), math.max_int())
+    test.assert_eq(htdur.as_nanos(htdur.from_years(292)), 9214819200000000000)
+
+@test
+fn test_subtraction_borrows_a_second()
+    let d = htdur.sub(htdur.new(2, 200000000), htdur.from_millis(500))
+    test.assert_eq(d.secs, 1)
+    test.assert_eq(d.nanos, 700000000)
+    let e = htdur.sat_sub(htdur.new(2, 200000000), htdur.from_millis(500))
+    test.assert_eq(e.nanos, 700000000)
+    test.assert_eq(htdur.is_zero(htdur.sat_sub(htdur.from_secs(3), htdur.from_secs(3))), true)
+
+@test
+fn test_saturating_addition_at_the_carry()
+    let near = htdur.new(math.max_int(), 600000000)
+    test.assert_eq(htdur.compare(htdur.sat_add(near, htdur.from_millis(600)), htdur.max_value()), 0)
+    let two = htdur.sat_add(htdur.new(1, 600000000), htdur.new(0, 600000000))
+    test.assert_eq(two.secs, 2)
+    test.assert_eq(two.nanos, 200000000)
+
+@test
+fn test_multiplication_saturates()
+    test.assert_eq(htdur.compare(htdur.mul_int(htdur.from_years(1), 1000000000000), htdur.max_value()), 0)
+    test.assert_eq(htdur.compare(htdur.mul_int(htdur.new(0, 999999999), math.max_int()), htdur.max_value()), 0)
+    test.assert_eq(htdur.compare(htdur.mul_int(htdur.new(3074457345618258602, 999999999), 3), htdur.max_value()),
+        0)
+    let d = htdur.mul_int(htdur.new(1, 600000000), 3)
+    test.assert_eq(d.secs, 4)
+    test.assert_eq(d.nanos, 800000000)
+
+@test
+fn test_division_is_exact_to_the_nanosecond_for_any_divisor()
+    let third = htdur.div_int(htdur.from_secs(10), 3)
+    test.assert_eq(third.secs, 3)
+    test.assert_eq(third.nanos, 333333333)
+    test.assert_eq(htdur.is_zero(htdur.div_int(htdur.from_secs(10), -3)), true)
+    // A divisor past 2^62, where a product of the remainder and 10^9
+    // would not fit.
+    let big = htdur.div_int(htdur.max_value(), 4611686018427387904)
+    test.assert_eq(big.secs, 1)
+    test.assert_eq(big.nanos, 999999999)
+    let huge = htdur.div_int(htdur.new(math.max_int() - 1, 0), math.max_int())
+    test.assert_eq(huge.secs, 0)
+    test.assert_eq(huge.nanos, 999999999)
+    let tiny = htdur.div_int(htdur.new(0, 7), 2)
+    test.assert_eq(tiny.nanos, 3)
+
+@test
+fn test_min_and_max_answer_either_side()
+    let one = htdur.from_secs(1)
+    let two = htdur.from_secs(2)
+    test.assert_eq(htdur.min(two, one).secs, 1)
+    test.assert_eq(htdur.max(two, one).secs, 2)
+    test.assert_eq(htdur.compare(two, one), 1)
+    test.assert_eq(htdur.compare(htdur.new(1, 5), htdur.new(1, 4)), 1)
+    test.assert_eq(htdur.compare(htdur.new(1, 4), htdur.new(1, 5)), -1)
+
+@test
+fn test_the_terms_that_pass_the_longest_length()
+    assert_overflow("9223372036854775808s", 0)
+    assert_overflow("292271023045.5y", 0)
+    assert_overflow("9223372036854775807s 600ms 600ms", 27)
+    match humantime.parse_duration("292271023045.3y")
+        Ok(d)  => test.assert_eq(d.secs, 9223372036854359280)
+        Err(e) => test.fail(e.message())
+
+// Assert that `s` is `HtOverflow` at `at`.
+fn assert_overflow(s: Str, at: Int)
+    match humantime.parse_duration(s)
+        Ok(_)  => test.fail("${s} was accepted")
+        Err(e) =>
+            match e
+                HtOverflow(where) => test.assert_eq(where, at)
+                _                 => test.fail("expected HtOverflow: ${e.message()}")
+
+@test
+fn test_the_shortest_timestamp_at_each_precision()
+    let micro = htstamp.parse_rfc3339("2026-09-11T14:30:00.000250Z")!
+    test.assert_eq(htstamp.format_rfc3339(micro), "2026-09-11T14:30:00.000250Z")
+    let nano = htstamp.parse_rfc3339("2026-09-11T14:30:00.000000250Z")!
+    test.assert_eq(htstamp.format_rfc3339(nano), "2026-09-11T14:30:00.000000250Z")
+
+@test
+fn test_since_borrows_a_second_and_refuses_a_backwards_fraction()
+    let a = htstamp.parse_rfc3339("2026-09-11T14:00:00.750Z")!
+    let b = htstamp.parse_rfc3339("2026-09-11T14:00:01.250Z")!
+    match htstamp.since(a, b)
+        Ok(d)  =>
+            test.assert_eq(d.secs, 0)
+            test.assert_eq(d.nanos, 500000000)
+        Err(e) => test.fail(e.message())
+    match htstamp.since(b, a)
+        Ok(_)  => test.fail("backwards")
+        Err(e) => test.assert_eq(humantime.offset_of(e), -1)
+    let c = htstamp.parse_rfc3339("2026-09-11T14:00:00.250Z")!
+    match htstamp.since(a, c)
+        Ok(_)  => test.fail("backwards by half a second")
+        Err(e) => test.assert_eq(humantime.offset_of(e), -1)

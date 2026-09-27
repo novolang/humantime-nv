@@ -1,0 +1,325 @@
+// tests/vectors_tests.nv — humantime's own test cases, and RFC 3339
+// section 5.8's examples.
+//
+// The duration vectors are the cases in the Rust crate's `duration.rs`
+// tests: every unit spelling with the length it parses to, the two
+// combinations, the overflows, and the exact formatter's output for each
+// unit.  The timestamp vectors are the crate's `date.rs` cases and the
+// five examples RFC 3339 section 5.8 gives, three of which this profile
+// refuses.
+
+use std.test
+use htdur
+use humantime
+use htstamp
+
+// Assert that `s` parses to `secs` seconds and `nanos` nanoseconds.
+fn parses_to(s: Str, secs: Int, nanos: Int)
+    match humantime.parse_duration(s)
+        Ok(d)  =>
+            test.assert_eq(d.secs, secs)
+            test.assert_eq(d.nanos, nanos)
+        Err(e) => test.fail("${s}: ${e.message()}")
+
+@test
+fn test_every_unit_spelling_in_humantime_s_unit_test()
+    parses_to("17nsec", 0, 17)
+    parses_to("17nanos", 0, 17)
+    parses_to("33ns", 0, 33)
+    parses_to("3usec", 0, 3000)
+    parses_to("78us", 0, 78000)
+    parses_to("78µs", 0, 78000)
+    parses_to("31msec", 0, 31000000)
+    parses_to("31millis", 0, 31000000)
+    parses_to("6ms", 0, 6000000)
+    parses_to("3000s", 3000, 0)
+    parses_to("300sec", 300, 0)
+    parses_to("300secs", 300, 0)
+    parses_to("50seconds", 50, 0)
+    parses_to("1second", 1, 0)
+    parses_to("100m", 6000, 0)
+    parses_to("12min", 720, 0)
+    parses_to("12mins", 720, 0)
+    parses_to("1minute", 60, 0)
+    parses_to("7minutes", 420, 0)
+    parses_to("2h", 7200, 0)
+    parses_to("7hr", 25200, 0)
+    parses_to("7hrs", 25200, 0)
+    parses_to("1hour", 3600, 0)
+    parses_to("24hours", 86400, 0)
+    parses_to("1day", 86400, 0)
+    parses_to("2days", 172800, 0)
+    parses_to("365d", 31536000, 0)
+    parses_to("1week", 604800, 0)
+    parses_to("7weeks", 4233600, 0)
+    parses_to("52w", 31449600, 0)
+    parses_to("1month", 2630016, 0)
+    parses_to("3months", 7890048, 0)
+    parses_to("12M", 31560192, 0)
+    parses_to("1year", 31557600, 0)
+    parses_to("7years", 220903200, 0)
+    parses_to("17y", 536479200, 0)
+
+@test
+fn test_humantime_s_combinations()
+    parses_to("20 min 17 nsec ", 1200, 17)
+    parses_to("2h 15m", 8100, 0)
+    parses_to("2h 37m", 9420, 0)
+    parses_to("1h30m", 5400, 0)
+    parses_to("\t1h\t30m\t", 5400, 0)
+
+@test
+fn test_a_fraction_of_every_size_of_unit()
+    parses_to("1.5h", 5400, 0)
+    parses_to("0.5ms", 0, 500000)
+    parses_to("1.25us", 0, 1250)
+    parses_to("2.5ns", 0, 2)
+    parses_to("0.5y", 15778800, 0)
+    parses_to("0.1s", 0, 100000000)
+    // Past the ninth digit the fraction is read and dropped.
+    parses_to("1.0000000019s", 1, 1)
+    parses_to("1.123456789123s", 1, 123456789)
+    // A fraction of a month that does not come out in whole seconds.
+    parses_to("0.3333333M", 876671, 912332800)
+
+@test
+fn test_overflow_is_refused_at_the_term_that_passed_the_limit()
+    assert_refused("100000000000000000000ns", "overflow", 0)
+    assert_refused("1s 300000000000y", "overflow", 3)
+    assert_refused("9223372036854775807s 1s", "overflow", 21)
+    // The longest length the type holds is not an overflow.
+    parses_to("9223372036854775807s 999999999ns", 9223372036854775807, 999999999)
+
+// Assert that `s` is refused with the variant `kind` at offset `at`.
+fn assert_refused(s: Str, kind: Str, at: Int)
+    match humantime.parse_duration(s)
+        Ok(_)  => test.fail("${s} was accepted")
+        Err(e) =>
+            test.assert_eq(kind_of(e), kind)
+            test.assert_eq(humantime.offset_of(e), at)
+
+// A short name for each variant, so one assertion covers them all.
+fn kind_of(e: HtError) -> Str
+    match e
+        HtEmptyInput             => "empty"
+        HtBadCharacter(_, _)     => "character"
+        HtUnknownUnit(_, _)      => "unit"
+        HtNumberWithoutUnit(_)   => "bare number"
+        HtUnitWithoutNumber(_)   => "bare unit"
+        HtOverflow(_)            => "overflow"
+        HtBadTimestamp(_)        => "timestamp"
+        HtTimestampOutOfRange(_) => "range"
+
+@test
+fn test_the_refusals_humantime_s_error_tests_name()
+    assert_refused("123", "bare number", 0)
+    assert_refused("10 months 1", "bare number", 10)
+    assert_refused("10nights", "unit", 2)
+    assert_refused("", "empty", -1)
+    assert_refused("_", "character", 0)
+    assert_refused("1h_", "character", 2)
+    assert_refused("1 _", "character", 2)
+    assert_refused(".5s", "character", 0)
+    assert_refused("1.s", "character", 1)
+    assert_refused("1.", "character", 1)
+    assert_refused("1.5.5s", "character", 3)
+    assert_refused("s", "bare unit", 0)
+    assert_refused("5 SEC", "unit", 2)
+    assert_refused("5ñ", "character", 1)
+
+@test
+fn test_every_refusal_reads_as_one_line()
+    test.assert_eq(HtEmptyInput.message(), "empty duration")
+    test.assert_eq(HtBadCharacter(0, '-').message(), "unexpected character '-' at offset 0")
+    test.assert_eq(HtBadCharacter(3, 195).message(), "unexpected byte 195 at offset 3")
+    test.assert_eq(HtBadCharacter(3, 10).message(), "unexpected byte 10 at offset 3")
+    test.assert_eq(HtUnknownUnit(2, "nights").message(), "unknown unit 'nights' at offset 2")
+    test.assert_eq(HtNumberWithoutUnit(0).message(), "number without a unit at offset 0")
+    test.assert_eq(HtUnitWithoutNumber(3).message(), "unit without a number at offset 3")
+    test.assert_eq(HtOverflow(4).message(), "duration too long, at offset 4")
+    test.assert_eq(HtBadTimestamp(19).message(), "not an RFC 3339 timestamp: stopped at offset 19")
+    test.assert_eq(HtTimestampOutOfRange(8).message(), "timestamp field out of range at offset 8")
+    test.assert_eq(HtTimestampOutOfRange(-1).message(), "timestamp out of range")
+
+@test
+fn test_the_second_resolution_parse_refuses_a_decimal_point()
+    match humantime.parse_duration_secs("1.5m")
+        Ok(_)  => test.fail("a decimal point is below a second's resolution")
+        Err(e) => test.assert_eq(humantime.offset_of(e), 1)
+    match humantime.parse_duration_secs("1y 1M")
+        Ok(secs) => test.assert_eq(secs, 34187616)
+        Err(e)   => test.fail(e.message())
+
+@test
+fn test_humantime_s_formatted_durations()
+    test.assert_eq(humantime.format_duration(htdur.new(0, 0)), "0s")
+    test.assert_eq(humantime.format_duration(htdur.new(0, 1)), "1ns")
+    test.assert_eq(humantime.format_duration(htdur.new(0, 1000)), "1us")
+    test.assert_eq(humantime.format_duration(htdur.new(0, 1000000)), "1ms")
+    test.assert_eq(humantime.format_duration(htdur.new(1, 0)), "1s")
+    test.assert_eq(humantime.format_duration(htdur.new(60, 0)), "1m")
+    test.assert_eq(humantime.format_duration(htdur.new(3600, 0)), "1h")
+    test.assert_eq(humantime.format_duration(htdur.new(86400, 0)), "1day")
+    test.assert_eq(humantime.format_duration(htdur.new(172800, 0)), "2days")
+    test.assert_eq(humantime.format_duration(htdur.new(2630016, 0)), "1month")
+    test.assert_eq(humantime.format_duration(htdur.new(5260032, 0)), "2months")
+    test.assert_eq(humantime.format_duration(htdur.new(31557600, 0)), "1year")
+    test.assert_eq(humantime.format_duration(htdur.new(63115200, 0)), "2years")
+    test.assert_eq(humantime.format_duration(htdur.new(34277677, 1001001)),
+        "1year 1month 1day 1h 1m 1s 1ms 1us 1ns")
+    // Seven days are not a week in the exact spelling.
+    test.assert_eq(humantime.format_duration(htdur.from_weeks(1)), "7days")
+
+@test
+fn test_every_formatted_duration_parses_back()
+    let lengths = [htdur.new(34277677, 1001001),
+        htdur.from_weeks(3),
+        htdur.new(1, 999999999),
+        htdur.max_value(),
+        htdur.from_years(292)]
+    for want in lengths
+        let text = humantime.format_duration(want)
+        match humantime.parse_duration(text)
+            Ok(d)  =>
+                test.assert_eq(d.secs, want.secs)
+                test.assert_eq(d.nanos, want.nanos)
+            Err(e) => test.fail("${text}: ${e.message()}")
+
+@test
+fn test_the_floor_picks_the_unit_it_stops_at()
+    let d = htdur.new(34277677, 1001001)
+    test.assert_eq(humantime.format_duration_from(d, htdur.zero()), "1year 1month 1day 1h 1m 1s 1ms 1us 1ns")
+    test.assert_eq(humantime.format_duration_from(d, htdur.from_days(1)), "1year 1month 1day")
+    test.assert_eq(humantime.format_duration_from(d, htdur.from_weeks(1)), "1year 1month 1day")
+    test.assert_eq(humantime.format_duration_from(d, htdur.from_years(5)), "1year")
+    test.assert_eq(humantime.format_duration_from(d, htdur.from_micros(1)), "1year 1month 1day 1h 1m 1s 1ms 1us")
+    test.assert_eq(humantime.format_duration_from(htdur.from_hours(5), htdur.from_days(1)), "0days")
+    test.assert_eq(humantime.format_duration_from(htdur.zero(), htdur.from_millis(1)), "0ms")
+
+@test
+fn test_the_rounded_spelling_across_the_units()
+    test.assert_eq(humantime.format_approx(htdur.zero()), "just now")
+    test.assert_eq(humantime.format_approx(htdur.new(59, 400000000)), "about 59 seconds")
+    test.assert_eq(humantime.format_approx(htdur.from_secs(90)), "about 1 minute")
+    test.assert_eq(humantime.format_approx(htdur.new(90, 1)), "about 2 minutes")
+    test.assert_eq(humantime.format_approx(htdur.from_secs(3599)), "about 1 hour")
+    test.assert_eq(humantime.format_approx(htdur.from_days(1)), "1 day")
+    test.assert_eq(humantime.format_approx(htdur.from_days(10)), "about 1 week")
+    test.assert_eq(humantime.format_approx(htdur.from_weeks(2)), "2 weeks")
+    test.assert_eq(humantime.format_approx(htdur.from_months(1)), "1 month")
+    test.assert_eq(humantime.format_approx(htdur.from_years(3)), "3 years")
+    test.assert_eq(humantime.format_approx(htdur.from_days(400)), "about 1 year")
+
+@test
+fn test_the_unit_noun_for_every_unit()
+    test.assert_eq(humantime.largest_unit_name(htdur.zero()), "nanoseconds")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_nanos(1)), "nanosecond")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_micros(2)), "microseconds")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_millis(1)), "millisecond")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_secs(5400)), "hour")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_minutes(3)), "minutes")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_secs(59)), "seconds")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_days(2)), "days")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_weeks(1)), "week")
+    test.assert_eq(humantime.largest_unit_name(htdur.from_years(2)), "years")
+
+// ── RFC 3339 ────────────────────────────────────────────────────────
+
+@test
+fn test_humantime_s_timestamps()
+    let dt = htstamp.parse_rfc3339("2018-02-13T23:08:32Z")!
+    test.assert_eq(htstamp.format_rfc3339(dt), "2018-02-13T23:08:32Z")
+    let epoch = htstamp.parse_rfc3339("1970-01-01T00:00:00Z")!
+    test.assert_eq(htstamp.format_rfc3339_nanos(epoch), "1970-01-01T00:00:00.000000000Z")
+    let last = htstamp.parse_rfc3339("9999-12-31T23:59:59.999999999Z")!
+    test.assert_eq(htstamp.format_rfc3339(last), "9999-12-31T23:59:59.999999999Z")
+    let first = htstamp.parse_rfc3339("0000-01-01T00:00:00Z")!
+    test.assert_eq(htstamp.format_rfc3339(first), "0000-01-01T00:00:00Z")
+    let spaced = htstamp.parse_rfc3339_weak("2018-02-13 23:08:32")!
+    test.assert_eq(htstamp.format_rfc3339(spaced), "2018-02-13T23:08:32Z")
+    let spaced_z = htstamp.parse_rfc3339_weak("2018-02-13 23:08:32.5Z")!
+    test.assert_eq(htstamp.format_rfc3339(spaced_z), "2018-02-13T23:08:32.500Z")
+
+@test
+fn test_rfc_3339_section_5_8_examples()
+    let a = htstamp.parse_rfc3339("1985-04-12T23:20:50.52Z")!
+    test.assert_eq(a.time.nano, 520000000)
+    test.assert_eq(htstamp.format_rfc3339(a), "1985-04-12T23:20:50.520Z")
+    test.assert_eq(htstamp.format_rfc3339_micros(a), "1985-04-12T23:20:50.520000Z")
+    stamp_refused("1996-12-19T16:39:57-08:00", "timestamp", 19)
+    stamp_refused("1990-12-31T23:59:60Z", "range", 17)
+    stamp_refused("1990-12-31T15:59:60-08:00", "range", 17)
+    stamp_refused("1937-01-01T12:00:27.87+00:20", "timestamp", 22)
+
+// Assert that the strict parser refuses `s` with `kind` at `at`.
+fn stamp_refused(s: Str, kind: Str, at: Int)
+    match htstamp.parse_rfc3339(s)
+        Ok(_)  => test.fail("${s} was accepted")
+        Err(e) =>
+            test.assert_eq(kind_of(e), kind)
+            test.assert_eq(humantime.offset_of(e), at)
+
+@test
+fn test_every_field_refused_where_it_stands()
+    stamp_refused("26-09-11T14:30:00Z", "timestamp", 2)
+    stamp_refused("2026/09/11T14:30:00Z", "timestamp", 4)
+    stamp_refused("2026-09/11T14:30:00Z", "timestamp", 7)
+    stamp_refused("2026-13-11T14:30:00Z", "range", 5)
+    stamp_refused("2026-00-11T14:30:00Z", "range", 5)
+    stamp_refused("2026-09-31T14:30:00Z", "range", 8)
+    stamp_refused("2026-09-11T24:00:00Z", "range", 11)
+    stamp_refused("2026-09-11T14:60:00Z", "range", 14)
+    stamp_refused("2026-09-11T14.30:00Z", "timestamp", 13)
+    stamp_refused("2026-09-11T14:30.00Z", "timestamp", 16)
+    stamp_refused("2026-09-11T14:30:00.Z", "timestamp", 20)
+    stamp_refused("2026-09-11T14:30:00.1234567890Z", "timestamp", 29)
+    stamp_refused("2026-09-11T14:30:00Zjunk", "timestamp", 20)
+    stamp_refused("2026-09-11t14:30:00Z", "timestamp", 10)
+    stamp_refused("", "timestamp", 0)
+    test.assert_eq(htstamp.is_rfc3339("2026-09-11T14:30:00.1Z"), true)
+
+@test
+fn test_the_lenient_parser_still_refuses_what_is_not_a_timestamp()
+    match htstamp.parse_rfc3339_weak("2026-09-11_14:30:00")
+        Ok(_)  => test.fail("an underscore is not a separator")
+        Err(e) => test.assert_eq(humantime.offset_of(e), 10)
+    match htstamp.parse_rfc3339_weak("2026-09-11 14:30:00Z ")
+        Ok(_)  => test.fail("a trailing space")
+        Err(e) => test.assert_eq(humantime.offset_of(e), 20)
+    match htstamp.parse_rfc3339_weak("2026-09-11 14:30:00 ")
+        Ok(_)  => test.fail("a trailing space")
+        Err(e) => test.assert_eq(humantime.offset_of(e), 19)
+    match htstamp.parse_rfc3339_weak("2026-02-29")
+        Ok(_)  => test.fail("2026 is not a leap year")
+        Err(e) => test.assert_eq(kind_of(e), "range")
+
+@test
+fn test_a_year_outside_four_digits_is_written_but_not_read_back()
+    let far = civil.datetime(civil.date(12026, 1, 2)!, civil.midnight())
+    test.assert_eq(htstamp.format_rfc3339(far), "12026-01-02T00:00:00Z")
+    let early = civil.datetime(civil.date(-44, 3, 15)!, civil.midnight())
+    let text = htstamp.format_rfc3339(early)
+    test.assert_eq(text, "-0044-03-15T00:00:00Z")
+    test.assert_eq(htstamp.is_rfc3339(text), false)
+
+@test
+fn test_the_arithmetic_at_the_edges_of_the_calendar()
+    let dt = htstamp.parse_rfc3339("2026-09-11T14:00:00.250Z")!
+    match htstamp.sub(dt, htdur.new(0, 500000000))
+        Ok(before) => test.assert_eq(htstamp.format_rfc3339(before), "2026-09-11T13:59:59.750Z")
+        Err(e)     => test.fail(e.message())
+    match htstamp.add(dt, htdur.max_value())
+        Ok(_)  => test.fail("past the last year calendar-nv holds")
+        Err(e) => test.assert_eq(humantime.offset_of(e), -1)
+    match htstamp.sub(dt, htdur.max_value())
+        Ok(_)  => test.fail("before the first year calendar-nv holds")
+        Err(e) => test.assert_eq(humantime.offset_of(e), -1)
+    match htstamp.since(dt, dt)
+        Ok(d)  => test.assert_eq(htdur.is_zero(d), true)
+        Err(e) => test.fail(e.message())
+    let later = htstamp.parse_rfc3339("2026-09-12T14:00:00.000000001Z")!
+    match htstamp.since(dt, later)
+        Ok(d)  =>
+            test.assert_eq(d.secs, 86399)
+            test.assert_eq(d.nanos, 750000001)
+        Err(e) => test.fail(e.message())
