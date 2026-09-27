@@ -8,28 +8,23 @@ of RFC 3339 timestamp parsers. This package brings both to novo-lang.
 There is no clock in it: every function takes the instants it needs as
 arguments.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is declared
-with its full signature, but every body is a `todo()` that panics when
-called. The package is published so its design can be reviewed and
-depended on before it is implemented. Version 0.1.0 will be the first
-working release.
-
 ## What it is
 
 A **duration** here is a length of time, exact to the nanosecond and
 never negative. It is written as a series of **terms**, and the terms
 are added: `"2h 30m"` is two and a half hours, and `"1h 1h"` is two
 hours. A term is a number and a unit. The number may carry a decimal
-point, so `"1.5s"` is a second and a half. The space between the number
-and the unit is optional, and so is the space between terms.
+point, so `"1.5s"` is a second and a half. A space or a tab may stand
+between the number and the unit, and between two terms, and neither is
+required.
 
 These are the units, with every spelling the grammar accepts.
 
 | Unit | Spellings | Seconds |
 | --- | --- | --- |
-| nanosecond | `ns` | 0.000000001 |
-| microsecond | `us`, `µs` | 0.000001 |
-| millisecond | `ms` | 0.001 |
+| nanosecond | `ns`, `nsec`, `nanos` | 0.000000001 |
+| microsecond | `us`, `µs`, `usec` | 0.000001 |
+| millisecond | `ms`, `msec`, `millis` | 0.001 |
 | second | `s`, `sec`, `secs`, `second`, `seconds` | 1 |
 | minute | `m`, `min`, `mins`, `minute`, `minutes` | 60 |
 | hour | `h`, `hr`, `hrs`, `hour`, `hours` | 3600 |
@@ -64,6 +59,8 @@ different value.
 novo pkg add humantime-nv
 ```
 
+humantime-nv needs a novo-lang toolchain of 0.13.0 or newer.
+
 ## Example
 
 ```novo
@@ -74,9 +71,7 @@ use humantime
 fn main() [io]
     // A timeout as it was written in a configuration file.
     match humantime.parse_duration("2h 30m")
-        // The parse answers the two integers `htdur.new` takes.
-        Ok((secs, nanos)) =>
-            let d = htdur.new(secs, nanos)
+        Ok(d) =>
             // The length as a whole number of milliseconds, truncated.
             println(str.from_int(htdur.as_millis(d)))   // 9000000
             // The shortest spelling that means exactly this length.
@@ -87,10 +82,7 @@ fn main() [io]
         Err(e) => println(e.message())
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: <module>.<fn>` panic. The tests are the specification
-the implementation will have to satisfy.
+Build with `novo pkg build` and run the suites with `novo test`.
 
 ## What the package contains
 
@@ -102,8 +94,8 @@ the implementation will have to satisfy.
 
 ## How to choose an entry point
 
-**`humantime.parse_duration` is the ordinary read.** It answers the
-seconds and the nanoseconds that `htdur.new` takes.
+**`humantime.parse_duration` is the ordinary read.** It answers an
+`HtDuration`.
 
 **`humantime.parse_duration_secs` refuses anything below a second.**
 Take it when the consumer has second resolution — an HTTP `max-age`, a
@@ -157,11 +149,9 @@ microseconds or nanoseconds. See rule 10.
    `format_approx` produces `"about"` and `"just now"`, which are not in
    the grammar, so its output cannot be parsed. They are two functions
    rather than one with a flag, so that a call site says which it meant.
-5. **A fallible read answers two integers, not a length.**
-   `HtDuration` is a `@value` struct, which may not be the payload of a
-   `Result`. So `parse_duration`, `htstamp.since` and
-   `htstamp.from_time_delta` answer `Result<(Int, Int), HtError>`, and
-   `htdur.new(secs, nanos)` is the line that follows.
+5. **A fraction is exact to the nanosecond and no finer.** `"1.5h"` is
+   5400 seconds exactly, and `"0.5ns"` is zero. Fractional digits past
+   the ninth are read and dropped.
 6. **A month is 30.4375 days and a year is 365.25 days.** Exact lengths,
    for "expire this entry in a month". For "bill this customer next
    month", which is a calendar question, use calendar-nv's
@@ -175,10 +165,13 @@ microseconds or nanoseconds. See rule 10.
 8. **`htdur.as_nanos` saturates past about 292 years.** An `Int` is 64
    bits and nanoseconds run out there. A saturated answer is one a
    caller can notice; a wrapped one is not.
-9. **`htdur.div_int` by zero answers `htdur.max_value()`.** A caller
+9. **`htdur.add` traps on overflow, and the rest of the arithmetic
+   saturates.** `htdur.sat_add` and `htdur.mul_int` stop at
+   `htdur.max_value()`, so a backoff that has run long stops growing.
+   `htdur.div_int` by zero answers `htdur.max_value()`, so a caller
    dividing by a count that turned out to be empty gets a number it can
-   see rather than a stopped program. A negative multiplier in
-   `htdur.mul_int` answers zero.
+   see rather than a stopped program. A negative multiplier or divisor
+   answers zero.
 10. **The RFC 3339 precision is fixed per function, not per call.** A
     log whose timestamps are sometimes six fractional digits and
     sometimes nine does not sort as text, which is the one property a
@@ -186,7 +179,8 @@ microseconds or nanoseconds. See rule 10.
     prints three digits, including `.000`.
 11. **A leap second is refused.** `:60` has no place in calendar-nv's
     `CivilTime`, and a timestamp silently moved to the next minute would
-    not round-trip. It is `HtBadTimestamp`.
+    not round-trip. It is `HtTimestampOutOfRange` at the offset of the
+    seconds, as a month of 13 or a 25th hour is at theirs.
 12. **The timestamp half is UTC only.** Both parsers require, or assume,
     `Z`. A timestamp carrying an offset such as `+02:00` goes through
     calendar-nv's `iso8601.parse_rfc3339`, which answers the offset as a
@@ -201,6 +195,13 @@ microseconds or nanoseconds. See rule 10.
 15. **Every refusal carries a byte offset, and `humantime.offset_of`
     reads it.** It answers `-1` for the refusals that have no position,
     so a caller printing a caret under the problem needs no `match`.
+16. **`format_approx` rounds to the nearest whole count, and a length
+    exactly halfway rounds down.** `2h 30m` is `"about 2 hours"`. A
+    count that rounds up into the next unit is said in that unit, so
+    3599 seconds is `"about 1 hour"`.
+17. **RFC 3339 writes a year in four digits.** A `CivilDate` outside
+    the years 0 to 9999 is formatted with more digits or a sign, and
+    the parsers refuse that text.
 
 ## What is not included
 
@@ -254,12 +255,18 @@ signed one.
 ## Tests
 
 ```bash
-novo test --isolate tests/humantime_tests.nv   # 44 tests
+novo test tests/humantime_tests.nv   # 44 tests: every function, and the two properties
+novo test tests/vectors_tests.nv     # 18 tests: humantime's own cases and RFC 3339 § 5.8
+novo test tests/edges_tests.nv       # 10 tests: the arithmetic at the largest Int
+bash tests/coverage.sh               # 468 of 468 lines of src/, merged over the three
 ```
 
-The vectors are humantime's own: its unit table, the `m` and `M` rule,
-the strict and lenient timestamp parsers and the five formatters. RFC
-3339 section 5.8 supplies the timestamp examples.
+The vectors are humantime's own: every unit spelling in the Rust
+crate's unit test with the length it parses to, its combinations, its
+overflows and refusals, and its exact formatter's output for each
+unit. RFC 3339 section 5.8 supplies the timestamp examples, three of
+which this profile refuses: two carry an offset other than `Z` and one
+is a leap second.
 
 The suite is built around the two properties the package claims. The
 first is that `format_duration` round-trips: for each awkward length —
@@ -271,29 +278,6 @@ by term, each refusal with the offset it was found at, the truncation of
 every conversion out of a length, the strict and lenient timestamp
 parsers against RFC 3339 section 5.8's samples, and the two crossings to
 calendar-nv's signed type in both directions.
-
-The tests compile today and fail at run, each on the
-`not implemented: <module>.<fn>` panic that is its body. That is the
-expected state of an interface release. They turn green one at a time as
-bodies land.
-
-## Implementation status
-
-| Item | Implemented |
-| --- | --- |
-| `htdur.new`, `.zero`, `.max_value` | no |
-| `htdur.from_nanos` … `.from_years`, one per unit | no |
-| `htdur.minute_secs`, `.hour_secs`, `.day_secs`, `.week_secs`, `.month_secs`, `.year_secs` | no |
-| `htdur.as_secs`, `.subsec_nanos`, `.as_millis`, `.as_micros`, `.as_nanos`, `.is_zero` | no |
-| `htdur.add`, `.sub`, `.sat_add`, `.sat_sub`, `.mul_int`, `.div_int` | no |
-| `htdur.compare`, `.min`, `.max` | no |
-| `humantime.parse_duration`, `.parse_duration_secs`, `.is_duration` | no |
-| `humantime.format_duration`, `.format_duration_from`, `.format_approx`, `.largest_unit_name` | no |
-| `humantime.HtError.message`, `humantime.offset_of` | no |
-| `htstamp.parse_rfc3339`, `.parse_rfc3339_weak`, `.is_rfc3339` | no |
-| `htstamp.format_rfc3339` and the four fixed precisions | no |
-| `htstamp.since`, `.add`, `.sub` | no |
-| `htstamp.to_time_delta`, `.from_time_delta` | no |
 
 ## Licence
 

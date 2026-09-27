@@ -1,21 +1,19 @@
 [package]
 name        = "humantime-nv"
-version     = "0.0.2"
-description = "humantime's grammar in both directions: \"2h 30m\", \"1.5s\", \"250ms\" and \"1y 2months\" into a length of time, and a length back into the shortest spelling that means exactly it — plus a rounded one a person reads, and the RFC 3339 timestamp half over calendar-nv's civil types with no clock in it.  Interface only — every body is a todo()."
+version     = "0.1.0"
+description = "humantime's grammar in both directions: \"2h 30m\", \"1.5s\", \"250ms\" and \"1y 2months\" into a length of time, and a length back into the shortest spelling that means exactly it — plus a rounded one a person reads, and the RFC 3339 timestamp half over calendar-nv's civil types with no clock in it."
 license     = "Apache-2.0"
 
-# An INTERFACE release: every `pub fn` body is a `todo()`, so the
-# signatures and the effect rows are published and nothing is
-# implemented.  `novo pkg publish` recognises the shape and requires
-# both the draft stability and the 0.0.x version; the first
-# implementation is the 0.1.0 published over it.
-stability   = "draft"
+# `experimental` because no program outside this repository has used the
+# package yet, and the tests were written against the signatures rather
+# than by a consumer.
+stability   = "experimental"
 
 # `core`: a scan over text the caller already holds and arithmetic over
-# two integers.  Nothing reads the clock — `since` takes BOTH instants,
+# two integers.  Nothing reads the clock.  `since` takes both instants,
 # and a caller who wants "now" gets it from `std.time` or chrono-nv and
-# passes it in.  That is what keeps the package here rather than at
-# `host`, and it is also what lets a test pin the time.
+# passes it in.  That keeps the package here rather than at `host`, and
+# it lets a test pin the time.
 layer       = "core"
 
 category    = "time"
@@ -23,27 +21,25 @@ category    = "time"
 tags        = ["humantime", "duration", "rfc3339", "timestamp", "parse", "format", "sans-io"]
 repository  = "https://github.com/novolang/humantime-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.8.9"
+# 0.13.0 accepts a `@value` struct as the payload of a `Result` and of
+# an optional, and it carries `math.checked_*`.
+novo        = ">= 0.13.0"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.
 #
-# No `tests/embedded_probe.nv`, and so no device claim: the two useful
-# halves of this package are text, and `Str` does not link at
-# `@tier(embedded)`.  A device that wants a length of time wants the
-# integer, and a host is where the configuration file that spelled it
-# was read.
+# No `tests/embedded_probe.nv`, and so no claim to run on a
+# microcontroller.  Two of the three modules are about text, and `Str`
+# does not link at `@tier(embedded)`.  A device that wants a length of
+# time wants the integer, and a host is where the configuration file
+# that spelled it was read.
 
 [docs.pages]
 "README.md" = "\"2h 30m\", both ways"
 
 [dependencies]
 # calendar-nv supplies the civil types the RFC 3339 half reads and
-# writes — `CivilDate`, `CivilTime`, `CivilDateTime` — and the signed
-# `TimeDelta` that `htstamp.to_time_delta` crosses to.  `core`, like
-# this package, so the layer rule holds.
-#
-# Under the caret rule `^0.0.2` means exactly 0.0.2: a `0.0.x` version
-# has no compatible neighbours, so this line moves when calendar-nv
-# republishes.
-calendar-nv = "^0.0.2"
+# writes, `CivilDate`, `CivilTime` and `CivilDateTime`, and the signed
+# `TimeDelta` that `htstamp.to_time_delta` crosses to.  It is `core`,
+# like this package, so the layer rule holds.
+calendar-nv = "^0.2.0"

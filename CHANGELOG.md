@@ -4,6 +4,37 @@ Every published version, newest first. This file is on the publish
 allow-list, so it travels with the package: it is the only thing a
 consumer deciding whether to upgrade can read.
 
+## 0.1.0 — 2026-09-27
+
+humantime's grammar in both directions, the arithmetic over the length
+it spells, and RFC 3339 in UTC over calendar-nv 0.2's civil types.
+
+- `humantime.parse_duration` reads every spelling in humantime's unit
+  table, including `nsec`, `nanos`, `usec`, `msec` and `millis`, which
+  the 0.0.2 README left out.  A fraction is exact to the nanosecond,
+  and digits past the ninth are dropped.  Every refusal names its
+  offset.
+- `format_duration` writes years, months and days as words with a
+  plural and the smaller units as symbols, as humantime does:
+  `1year 2months 3days 4h 5m 6s`.  A week is written as seven days.
+- `format_approx` rounds to the nearest whole count, with a length
+  exactly halfway rounded down, and says a count that rounds into the
+  next unit in that unit.
+- `htdur.mul_int` and every constructor saturate at `max_value`, and
+  `div_int` is exact to the nanosecond for any divisor.
+- A timestamp field out of range, a leap second included, is
+  `HtTimestampOutOfRange` at that field's offset.  The 0.0.2 comments
+  listed a month of 13 under `HtBadTimestamp`.
+- The dependency is `calendar-nv ^0.2.0`, and the toolchain floor is
+  0.13.0.
+
+Breaking change against 0.0.2: `humantime.parse_duration`,
+`htstamp.since` and `htstamp.from_time_delta` answer
+`Result<HtDuration, HtError>` rather than `Result<(Int, Int), HtError>`.
+A `@value` struct is accepted as the payload of a `Result` by toolchain
+0.13.0, so the pair of integers and the `htdur.new` call after every
+parse are gone.
+
 ## 0.0.2 — 2026-09-16
 
 README rewritten to the package README style guide
