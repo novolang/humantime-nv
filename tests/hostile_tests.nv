@@ -1,0 +1,42 @@
+// hostile_tests.nv — durations and timestamps with numbers as large as
+// an Int allows.
+
+use std.test
+use humantime
+use htstamp
+use htdur
+
+fn refused(r: Result<HtDuration, HtError>) -> Bool
+    match r
+        Err(_) => true
+        Ok(_)  => false
+
+@test
+fn test_durations_past_the_range_are_refused() [io]
+    test.assert(refused(humantime.parse_duration("99999999999999999999s")))
+    test.assert(refused(humantime.parse_duration("9223372036854775807d")))
+    test.assert(refused(humantime.parse_duration("9223372036854775807y")))
+    test.assert(refused(humantime.parse_duration("9223372036854775807w")))
+    test.assert(refused(humantime.parse_duration("9223372036854775807h 9223372036854775807h")))
+    test.assert(refused(humantime.parse_duration("1h " + "9".repeat(5000) + "s")))
+    test.assert(refused(humantime.parse_duration("9223372036854775807s 999999999999ns 9223372036854775807s")))
+    test.case("many terms")
+    test.assert(not refused(humantime.parse_duration("1s ".repeat(20000))))
+    test.case("an honest duration still parses")
+    test.assert(not refused(humantime.parse_duration("1h 30m 5s")))
+
+@test
+fn test_timestamps_with_huge_fields_are_refused() [io]
+    test.assert(not htstamp.is_rfc3339("99999999999999999999-01-01T00:00:00Z"))
+    test.assert(not htstamp.is_rfc3339("2026-01-01T00:00:00+99999999999999999999:00"))
+    test.case("arithmetic at the limits")
+    match htstamp.parse_rfc3339("2026-01-01T00:00:00Z")
+        Err(_) => test.assert(false)
+        Ok(dt) =>
+            test.assert(refused_dt(htstamp.add(dt, htdur.max_value())))
+            test.assert(refused_dt(htstamp.sub(dt, htdur.max_value())))
+
+fn refused_dt(r: Result<CivilDateTime, HtError>) -> Bool
+    match r
+        Err(_) => true
+        Ok(_)  => false
